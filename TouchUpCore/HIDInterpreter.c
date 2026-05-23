@@ -183,80 +183,121 @@ void StoreInputValue(IOHIDValueRef hidValue) {
 
 
 /**
+ Returns true if the collection has both an X and a Y absolute-axis child.
+ Used to detect single-touch devices that report position via mouse-format data.
+ */
+static Boolean CollectionHasXY(IOHIDElementRef collection) {
+    CFArrayRef children = IOHIDElementGetChildren(collection);
+    Boolean hasX = false, hasY = false;
+    for (CFIndex i = 0; i < CFArrayGetCount(children); i++) {
+        IOHIDElementRef child = (IOHIDElementRef)CFArrayGetValueAtIndex(children, i);
+        if (IOHIDElementGetUsagePage(child) == kHIDPage_GenericDesktop) {
+            CFIndex u = IOHIDElementGetUsage(child);
+            if (u == kHIDUsage_GD_X) hasX = true;
+            if (u == kHIDUsage_GD_Y) hasY = true;
+        }
+    }
+    return hasX && hasY;
+}
+
+
+/**
+ Recursively scans children of a collection element, populating gTouchCollectionElements.
+ Returns the number of logical (or fallback single-touch) collections added.
+
+ Handles two device families:
+   A) Standard multi-touch digitizers: logical collections per finger.
+   B) Simple single-touch pointer devices: one physical container with X/Y and Button data.
+      For type B, the container itself is added as a single-touch collection when no logical
+      sub-collections are found inside it.
+ */
+CFIndex ScanChildrenForTouchCollections(IOHIDElementRef parent, Boolean printTree, int depth) {
+    CFArrayRef children = IOHIDElementGetChildren(parent);
+    CFIndex numChildren = CFArrayGetCount(children);
+    CFIndex found = 0;
+
+    for (CFIndex i = 0; i < numChildren; i++) {
+        IOHIDElementRef element = (IOHIDElementRef)CFArrayGetValueAtIndex(children, i);
+
+        CFIndex page           = IOHIDElementGetUsagePage(element);
+        CFIndex usage          = IOHIDElementGetUsage(element);
+        IOHIDElementType etype = IOHIDElementGetType(element);
+        IOHIDElementCollectionType ctype = IOHIDElementGetCollectionType(element);
+
+        if (etype == kIOHIDElementTypeCollection && ctype == kIOHIDElementCollectionTypeLogical) {
+            CFArrayAppendValue(gTouchCollectionElements, element);
+            found++;
+
+            if (printTree) {
+                printf("%*s> Logical collection %ld\n", depth * 2, "", (long)i);
+                CFArrayRef grandchildren = IOHIDElementGetChildren(element);
+                for (CFIndex j = 0; j < CFArrayGetCount(grandchildren); j++) {
+                    IOHIDElementRef gch = (IOHIDElementRef)CFArrayGetValueAtIndex(grandchildren, j);
+                    CFIndex gpage  = IOHIDElementGetUsagePage(gch);
+                    CFIndex gusage = IOHIDElementGetUsage(gch);
+                    CFIndex cookie = IOHIDElementGetCookie(gch);
+                    printf("%*s    > %#02lx %#02lx  [%ld]\n", depth * 2, "", (unsigned long)gpage, (unsigned long)gusage, (long)cookie);
+                }
+            }
+
+        } else if (etype == kIOHIDElementTypeCollection) {
+            if (printTree) {
+                printf("%*s> Container %#02lx/%#02lx (ctype=%u) — recursing\n",
+                       depth * 2, "", (unsigned long)page, (unsigned long)usage, ctype);
+            }
+
+            CFIndex nested = ScanChildrenForTouchCollections(element, printTree, depth + 1);
+
+            if (nested == 0 && CollectionHasXY(element)) {
+                // No logical sub-collections found, but this container carries absolute X/Y —
+                // treat it as a single-touch source (mouse/pointer format touchscreen).
+                CFArrayAppendValue(gTouchCollectionElements, element);
+                found++;
+                if (printTree) {
+                    printf("%*s  -> added as single-touch fallback collection\n", depth * 2, "");
+                }
+            } else {
+                found += nested;
+            }
+
+        } else if (page == kHIDPage_Digitizer && usage == kHIDUsage_Dig_ContactCount) {
+            if (printTree) printf("%*s> Contact Count\n", depth * 2, "");
+
+        } else if (page == kHIDPage_Digitizer && usage == kHIDUsage_Dig_RelativeScanTime) {
+            gScanTimeElement = element;
+            if (printTree) printf("%*s> Scan Time\n", depth * 2, "");
+
+        } else {
+            if (printTree) printf("%*s> %#02lx %#02lx\n", depth * 2, "", (unsigned long)page, (unsigned long)usage);
+        }
+    }
+    return found;
+}
+
+
+/**
  We need to inspect the HID tree as a whole once to see which elements are grouped into logical groups of touch data.
  Just pass in any element of the tree, the function will walk up the tree, search for the logical groups and rememeber them in the global variables.
  */
 void IdentifyElements(IOHIDElementRef anyElement, Boolean printTree) {
-    
+
+    // Walk to the root of the HID element tree (the top-level application collection).
     IOHIDElementRef applicationCollection = anyElement;
-    IOHIDElementType type = kIOHIDElementTypeOutput;
-    
-    while (type != kIOHIDElementCollectionTypeApplication) {
-        IOHIDElementRef next = IOHIDElementGetParent(applicationCollection);
-        if (next) {
-            applicationCollection = next;
-            type = IOHIDElementGetType(applicationCollection);
-        } else {
-            break;
-        }
+    IOHIDElementRef next;
+    while ((next = IOHIDElementGetParent(applicationCollection)) != NULL) {
+        applicationCollection = next;
     }
-    
+
     gApplicationCollectionElement = applicationCollection;
-    
-    
-    CFArrayRef children = IOHIDElementGetChildren(applicationCollection);
-    CFIndex numChildren = CFArrayGetCount(children);
-    
+
     if (printTree) {
-        printf("# parent (type %u) has %ld children:\n", type, numChildren);
+        CFIndex numChildren = CFArrayGetCount(IOHIDElementGetChildren(applicationCollection));
+        printf("# root collection has %ld children:\n", (long)numChildren);
     }
-    
-    
-    for (CFIndex i=0; i<numChildren; i++) {
-        IOHIDElementRef element = (IOHIDElementRef)CFArrayGetValueAtIndex(children, i);
-        
-        CFIndex page = IOHIDElementGetUsagePage(element);
-        CFIndex usage = IOHIDElementGetUsage(element);
-        IOHIDElementType type =  IOHIDElementGetType(element);
-        IOHIDElementCollectionType collectionType = IOHIDElementGetCollectionType(element);
-        
-        if (type == kIOHIDElementTypeCollection && collectionType == kIOHIDElementCollectionTypeLogical) {
-            CFArrayAppendValue(gTouchCollectionElements, element);
-            
-            if (printTree) {
-                printf(" > Logical collection %ld\n", i);
-                CFArrayRef grandchildren = IOHIDElementGetChildren(element);
-                for( CFIndex j=0; j<CFArrayGetCount(grandchildren); j++) {
-                    IOHIDElementRef gch = (IOHIDElementRef)CFArrayGetValueAtIndex(grandchildren, j);
-                    CFIndex page = IOHIDElementGetUsagePage(gch);
-                    CFIndex usage = IOHIDElementGetUsage(gch);
-                    CFIndex cookie= IOHIDElementGetCookie(gch);
-                    
-                    printf("    > %#02lx %#02lx  [%ld]\n", page, usage, cookie);
-                }
-            }
-            
-        } // logical collection
-        
-        else if (page == kHIDPage_Digitizer && usage == kHIDUsage_Dig_ContactCount) {
-            if (printTree) {
-                printf(" > Contact Count\n");
-            }
-        }
-        
-        else if (page == kHIDPage_Digitizer && usage == kHIDUsage_Dig_RelativeScanTime) {
-            gScanTimeElement = element;
-            if (printTree) {
-                printf(" > Scan Time\n");
-            }
-        }
-        
-        else {
-            if (printTree) {
-                printf(" > %#02lx %#02lx\n", page, usage);
-            }
-        }
-    }
+
+    // Recursively find all logical touch collections, handling devices that nest
+    // them inside physical/pointer container collections.
+    ScanChildrenForTouchCollections(applicationCollection, printTree, 0);
 }
 
 
@@ -382,6 +423,14 @@ void DispatchTouchDataForCollection(IOHIDElementRef collection) {
                     azimuth = value;
                 }
             } // kHIDPage_Digitizer
+
+            else if (page == kHIDPage_Button) {
+                if (usage == 1) {
+                    // Button page usage 1 = primary button. Mouse/pointer format touchscreens
+                    // signal touch-down via Button 1 instead of Digitizer/TipSwitch.
+                    tipSwitch = value;
+                }
+            } // kHIDPage_Button
         }
     }
     TouchInputManagerUpdateTouchPosition(gTouchManager, contactID, x, y, (int)tipSwitch, (int)isValid);
