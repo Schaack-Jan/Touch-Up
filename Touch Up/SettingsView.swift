@@ -82,6 +82,10 @@ struct SettingsView: View {
             Toggle(isOn: $model.isClickWindowToFrontEnabled) {
                 SettingsExplanationLabel(labels: model.uiLabels(for: \.isClickWindowToFrontEnabled))
             }
+
+            Toggle(isOn: $model.isCursorRestoredAfterTouch) {
+                SettingsExplanationLabel(labels: model.uiLabels(for: \.isCursorRestoredAfterTouch))
+            }
         }
     }
     
@@ -165,9 +169,8 @@ struct SettingsView: View {
                             .frame(width:0, height:0)
                             .foregroundColor(.clear)
                     }
-
                 }
-                
+
                 Section {
                     top
                 }
