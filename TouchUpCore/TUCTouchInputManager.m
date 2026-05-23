@@ -9,8 +9,21 @@
 
 #import "HIDInterpreter.h"
 #import "TUCCursorUtilities.h"
+#import <IOKit/IOKitLib.h>
+#import <IOKit/hid/IOHIDLib.h>
+#import <IOKit/hid/IOHIDElement.h>
 
 @interface TUCTouchInputManager ()
+
+// ─── IOKit HID device ─────────────────────────────────────────────────────
+@property IONotificationPortRef usbNotificationPort;
+@property io_iterator_t usbAppearedIterator;
+@property io_iterator_t usbRemovedIterator;
+@property (assign, nonatomic) IOHIDDeviceRef hidDeviceRef;
+@property (strong) NSMutableData *hidReportBuffer;
+@property CGFloat hidCurrentX;
+@property CGFloat hidCurrentY;
+@property BOOL hidCurrentButton;
 
 @property NSInteger currentFrameID;
 
@@ -33,21 +46,171 @@
 #pragma mark   Start & Stop
 
 - (void)start {
-    
-    __weak id weakSelf = self;
-    
-    // needs to run on main anyway
-//    [NSThread detachNewThreadWithBlock:^{
-//        [NSThread setThreadPriority:1];
-        OpenHIDManager((__bridge void *)(weakSelf));
-//    }];
-    
+    [self startUSBHIDListening];
 }
 
 - (void)stop {
-    CloseHIDManager();
+    [self stopUSBHIDListening];
 }
 
+
+#pragma mark - HID Device Listening
+
+// Value callback fires once per element that changed within a report.
+// We track the latest X, Y, and button state; processHIDValues assembles them.
+static void hidValueCallback(void *ctx, IOReturn result, void *sender, IOHIDValueRef value) {
+    if (result != kIOReturnSuccess) return;
+    TUCTouchInputManager *mgr = (__bridge TUCTouchInputManager *)ctx;
+    IOHIDElementRef elem = IOHIDValueGetElement(value);
+    uint32_t up   = IOHIDElementGetUsagePage(elem);
+    uint32_t u    = IOHIDElementGetUsage(elem);
+    CFIndex  val  = IOHIDValueGetIntegerValue(value);
+    CFIndex  lMin = IOHIDElementGetLogicalMin(elem);
+    CFIndex  lMax = IOHIDElementGetLogicalMax(elem);
+    if (lMax <= lMin) return;
+
+    if (up == 0x01 && u == 0x30) {         // Generic Desktop X
+        mgr.hidCurrentX = (CGFloat)(val - lMin) / (CGFloat)(lMax - lMin);
+    } else if (up == 0x01 && u == 0x31) {  // Generic Desktop Y
+        mgr.hidCurrentY = (CGFloat)(val - lMin) / (CGFloat)(lMax - lMin);
+    } else if ((up == 0x09 && u == 0x01) || (up == 0x0D && u == 0x42)) {
+        mgr.hidCurrentButton = (val != 0);  // Button 1 or Tip Switch
+    }
+}
+
+// Report callback fires once per complete HID report, after all value callbacks for that report.
+static void hidReportCallback(void *ctx, IOReturn result, void *sender, IOHIDReportType type,
+                              uint32_t reportID, uint8_t *report, CFIndex len) {
+    if (result != kIOReturnSuccess || len <= 0) return;
+    [(__bridge TUCTouchInputManager *)ctx processHIDValues];
+}
+
+static void usbAppearedCallback(void *refcon, io_iterator_t iterator) {
+    [(__bridge TUCTouchInputManager *)refcon handleUSBIterator:iterator appeared:YES];
+}
+static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
+    [(__bridge TUCTouchInputManager *)refcon handleUSBIterator:iterator appeared:NO];
+}
+
+- (void)startUSBHIDListening {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    _usbNotificationPort = IONotificationPortCreate(kIOMasterPortDefault);
+#pragma clang diagnostic pop
+    CFRunLoopSourceRef src = IONotificationPortGetRunLoopSource(_usbNotificationPort);
+    CFRunLoopAddSource(CFRunLoopGetMain(), src, kCFRunLoopDefaultMode);
+
+    CFMutableDictionaryRef matchAppear = IOServiceMatching("IOHIDDevice");
+    CFMutableDictionaryRef matchRemove = IOServiceMatching("IOHIDDevice");
+
+    IOServiceAddMatchingNotification(_usbNotificationPort, kIOFirstMatchNotification,
+        matchAppear, usbAppearedCallback, (__bridge void *)self, &_usbAppearedIterator);
+    [self handleUSBIterator:_usbAppearedIterator appeared:YES];
+
+    IOServiceAddMatchingNotification(_usbNotificationPort, kIOTerminatedNotification,
+        matchRemove, usbRemovedCallback, (__bridge void *)self, &_usbRemovedIterator);
+    [self handleUSBIterator:_usbRemovedIterator appeared:NO];
+}
+
+- (void)stopUSBHIDListening {
+    if (_hidDeviceRef) {
+        IOHIDDeviceUnscheduleFromRunLoop(_hidDeviceRef, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+        IOHIDDeviceClose(_hidDeviceRef, kIOHIDOptionsTypeNone);
+        CFRelease(_hidDeviceRef);
+        _hidDeviceRef = NULL;
+    }
+    _hidReportBuffer = nil;
+
+    if (_usbAppearedIterator) { IOObjectRelease(_usbAppearedIterator); _usbAppearedIterator = 0; }
+    if (_usbRemovedIterator)  { IOObjectRelease(_usbRemovedIterator);  _usbRemovedIterator  = 0; }
+    if (_usbNotificationPort) { IONotificationPortDestroy(_usbNotificationPort); _usbNotificationPort = nil; }
+}
+
+- (void)handleUSBIterator:(io_iterator_t)iterator appeared:(BOOL)appeared {
+    io_service_t service;
+    int count = 0;
+    while ((service = IOIteratorNext(iterator)) != MACH_PORT_NULL) {
+        count++;
+        if (appeared) {
+            [self considerHIDDevice:service];
+        } else {
+            if (_hidDeviceRef && IOObjectIsEqualTo(IOHIDDeviceGetService(_hidDeviceRef), service)) {
+                IOHIDDeviceUnscheduleFromRunLoop(_hidDeviceRef, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+                IOHIDDeviceClose(_hidDeviceRef, kIOHIDOptionsTypeNone);
+                CFRelease(_hidDeviceRef);
+                _hidDeviceRef = NULL;
+                _hidReportBuffer = nil;
+                TouchInputManagerDidDisconnectTouchscreen((__bridge void *)self);
+            }
+        }
+        IOObjectRelease(service);
+    }
+    if (appeared) NSLog(@"[TouchUp] HID: iterator drained, %d IOHIDDevice services found", count);
+}
+
+- (void)considerHIDDevice:(io_service_t)hidDevice {
+    CFMutableDictionaryRef propsRef = nil;
+    if (IORegistryEntryCreateCFProperties(hidDevice, &propsRef, kCFAllocatorDefault, 0) != KERN_SUCCESS) return;
+    NSDictionary *props = CFBridgingRelease(propsRef);
+
+    if (![props[@"Transport"] isEqualToString:@"USB"]) return;
+
+    NSInteger usagePage = [props[@"PrimaryUsagePage"] integerValue];
+    NSInteger usage     = [props[@"PrimaryUsage"]     integerValue];
+
+    NSLog(@"[TouchUp] HID: device usagePage=%ld usage=%ld VendorID=%@ ProductID=%@",
+          (long)usagePage, (long)usage, props[@"VendorID"], props[@"ProductID"]);
+
+    BOOL isDigitizer = (usagePage == 0x0D);
+    BOOL isPointer   = (usagePage == 0x01 && (usage == 1 || usage == 2));
+    if (!isDigitizer && !isPointer) {
+        NSLog(@"[TouchUp] HID: not a touch device — skipping");
+        return;
+    }
+
+    [self openIOHIDDevice:hidDevice];
+}
+
+// Open the IOHIDDevice for shared (non-exclusive) input report access.
+// For digitizer devices (usage page 0x0D), this does not trigger the Input Monitoring TCC prompt.
+// Element value callbacks update X/Y/button state; report callback fires once per complete report.
+- (void)openIOHIDDevice:(io_service_t)hidService {
+    if (_hidDeviceRef) return;
+
+    IOHIDDeviceRef device = IOHIDDeviceCreate(kCFAllocatorDefault, hidService);
+    if (!device) {
+        NSLog(@"[TouchUp] HID: IOHIDDeviceCreate failed");
+        return;
+    }
+
+    IOReturn ret = IOHIDDeviceOpen(device, kIOHIDOptionsTypeNone);
+    if (ret != kIOReturnSuccess) {
+        NSLog(@"[TouchUp] HID: IOHIDDeviceOpen failed: 0x%08x", ret);
+        CFRelease(device);
+        return;
+    }
+
+    // 512 bytes covers all USB HID reports (USB full-speed max is 64, but some devices use more)
+    NSUInteger bufSize = 512;
+    _hidReportBuffer = [NSMutableData dataWithLength:bufSize];
+
+    IOHIDDeviceRegisterInputValueCallback(device, hidValueCallback, (__bridge void *)self);
+    IOHIDDeviceRegisterInputReportCallback(device, _hidReportBuffer.mutableBytes,
+                                           (CFIndex)bufSize, hidReportCallback, (__bridge void *)self);
+    IOHIDDeviceScheduleWithRunLoop(device, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+
+    _hidDeviceRef = device; // owned — caller of IOHIDDeviceCreate holds the only reference
+
+    TouchInputManagerDidConnectTouchscreen((__bridge void *)self);
+    NSLog(@"[TouchUp] HID: device opened, listening for reports");
+}
+
+- (void)processHIDValues {
+    CGFloat x = MAX(0.0, MIN(1.0, _hidCurrentX));
+    CGFloat y = MAX(0.0, MIN(1.0, _hidCurrentY));
+    TouchInputManagerUpdateTouchPosition((__bridge void *)self, 0, x, y, (Boolean)_hidCurrentButton, 1);
+    TouchInputManagerDidProcessReport((__bridge void *)self);
+}
 
 - (void)didConnectTouchscreen {
     [self.delegate touchscreenDidConnect];
@@ -56,6 +219,8 @@
 - (void)didDisconnectTouchscreen {
     [self.delegate touchscreenDidDisconnect];
 }
+
+
 
 
 
@@ -327,9 +492,17 @@
 
 - (void)performMouseEventForGesture:(TUCCursorGesture)gesture {
     TUCTouch *touch = self.cursorTouch;
-    
+
+    TUCScreen *ts = [self touchscreen];
     CGPoint screenLocation = [self convertScreenPointRelativeToAbsolute:touch.location];
     CGPoint location2ndFinger = [self convertScreenPointRelativeToAbsolute:self.gestureAdditionalTouch.location];
+
+    NSLog(@"[TouchUp] screen='%@' frame={{%.0f,%.0f},{%.0f,%.0f}} relTouch=(%.3f,%.3f) absTouch=(%.0f,%.0f)",
+          ts.name,
+          ts.frame.origin.x, ts.frame.origin.y,
+          ts.frame.size.width, ts.frame.size.height,
+          touch.location.x, touch.location.y,
+          screenLocation.x, screenLocation.y);
     
     TUCCursorUtilities *utils = [TUCCursorUtilities sharedInstance];
     
@@ -682,8 +855,6 @@
     CGPoint loc = [[TUCCursorUtilities sharedInstance] currentCursorLocation];
     [[TUCCursorUtilities sharedInstance] moveCursorTo:loc];
 }
-
-
 
 #pragma mark - Bridge calls of C Header to Objective-C
 
