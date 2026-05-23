@@ -348,6 +348,9 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
     
     
     if (phase == NSTouchPhaseBegan) {
+        if (self.restoresCursorPositionAfterTouch) {
+            [[TUCCursorUtilities sharedInstance] saveCursorPosition];
+        }
         [self performMouseEventForGesture:TUCCursorGestureTouchDown];
         return;
     }
@@ -377,9 +380,9 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
                 [self performMouseEventForGesture:TUCCursorGestureDrag];
             }
         }
-        
+
         [self stopCurrentGesture];
-        
+
         if (self.cursorTouchQualifiedForTap) {
             [self performMouseEventForGesture:TUCCursorGestureTap];
         } else {
@@ -387,7 +390,11 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
                 [self performMouseEventForGesture:self.identifiedMultitouchGesture];
             }
         }
-        
+
+        if (self.restoresCursorPositionAfterTouch && !self.cursorTouchDidHold) {
+            [[TUCCursorUtilities sharedInstance] restoreCursorPosition];
+        }
+
         return;
     }
     
@@ -422,10 +429,9 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
                     
                     if (!CGPointEqualToPoint(trajectoryA, trajectoryB)) {
                         self.identifiedMultitouchGesture = TUCCursorGesturePinch;
+                    } else {
+                        self.identifiedMultitouchGesture = TUCCursorGestureTwoFingerDrag;
                     }
-//                    else {
-//                        self.identifiedMultitouchGesture = TUCCursorGestureTwoFingerDrag;
-//                    }
                 }
                 
             } else {
@@ -830,6 +836,7 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
         self.errorResistance = 0;
         
         self.ignoreOriginTouches = NO;
+        self.restoresCursorPositionAfterTouch = NO;
     }
     return self;
 }

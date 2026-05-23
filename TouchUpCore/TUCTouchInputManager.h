@@ -48,6 +48,12 @@ NS_ASSUME_NONNULL_BEGIN
  */
 @property BOOL ignoreOriginTouches;
 
+/**
+ When YES, the cursor is moved back to its position before the touch began.
+ Does not apply to hold-and-drag gestures (would undo the drag).
+ */
+@property BOOL restoresCursorPositionAfterTouch;
+
 
 - (void)start;
 
