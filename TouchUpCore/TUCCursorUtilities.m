@@ -21,6 +21,8 @@
 @property BOOL isMagnifying;
 @property CGFloat lastPinchDistance;
 
+@property CGPoint savedCursorPosition;
+
 @end
 
 @implementation TUCCursorUtilities
@@ -51,15 +53,32 @@
     return location;
 }
 
+- (void)saveCursorPosition {
+    self.savedCursorPosition = [self currentCursorLocation];
+}
+
+- (void)restoreCursorPosition {
+    CGWarpMouseCursorPosition(self.savedCursorPosition);
+    CGEventRef event = CGEventCreateMouseEvent(NULL, kCGEventMouseMoved,
+                                               self.savedCursorPosition, kCGMouseButtonLeft);
+    CGEventSetIntegerValueField(event, kCGMouseEventClickState, 0);
+    CGEventPost(kCGSessionEventTap, event);
+    CFRelease(event);
+}
+
 
 
 - (void)moveCursorTo:(CGPoint)aLocation {
     [self cancelMomentumScroll];
     [self stopDraggingCursor];
-    
+
+    // CGWarpMouseCursorPosition works in global screen coordinates across all monitors,
+    // unlike CGEventPost(kCGHIDEventTap, ...) which can be constrained to the current display.
+    CGWarpMouseCursorPosition(aLocation);
+
     CGEventRef event = CGEventCreateMouseEvent(NULL, kCGEventMouseMoved, aLocation, kCGMouseButtonLeft);
     CGEventSetIntegerValueField(event, kCGMouseEventClickState, 0);
-    CGEventPost(kCGHIDEventTap, event);
+    CGEventPost(kCGSessionEventTap, event);
     CFRelease(event);
 }
 
@@ -71,12 +90,12 @@
     CGEventTimestamp time = CGEventGetTimestamp(event);
     CGEventSetTimestamp(event, time-1);
     
-    CGEventPost(kCGHIDEventTap, event);
+    CGEventPost(kCGSessionEventTap, event);
     CGEventSetType(event, kCGEventLeftMouseDragged);
-    CGEventPost(kCGHIDEventTap, event);
+    CGEventPost(kCGSessionEventTap, event);
     CGEventSetLocation(event, aLocation);
     CGEventSetType(event, kCGEventLeftMouseUp);
-    CGEventPost(kCGHIDEventTap, event);
+    CGEventPost(kCGSessionEventTap, event);
     
     CFRelease(event);
     //    self.isLeftMouseDown = YES;
@@ -90,9 +109,9 @@
     
     CGEventRef event = CGEventCreateMouseEvent(NULL, kCGEventLeftMouseDown, aLocation, kCGMouseButtonLeft);
     CGEventSetIntegerValueField(event, kCGMouseEventClickState, self.cursorClickCount);
-    CGEventPost(kCGHIDEventTap, event);
+    CGEventPost(kCGSessionEventTap, event);
     CGEventSetType(event, kCGEventLeftMouseUp);
-    CGEventPost(kCGHIDEventTap, event);
+    CGEventPost(kCGSessionEventTap, event);
     CFRelease(event);
     
     self.timeOfLastClick = [NSDate date];
@@ -120,9 +139,9 @@
 - (void)performSecondaryClickAt:(CGPoint)aLocation {
     CGEventRef event = CGEventCreateMouseEvent(NULL, kCGEventRightMouseDown, aLocation, kCGMouseButtonRight);
     CGEventSetIntegerValueField(event, kCGMouseEventClickState, 1);
-    CGEventPost(kCGHIDEventTap, event);
+    CGEventPost(kCGSessionEventTap, event);
     CGEventSetType(event, kCGEventRightMouseUp);
-    CGEventPost(kCGHIDEventTap, event);
+    CGEventPost(kCGSessionEventTap, event);
     CFRelease(event);
 }
 
@@ -136,19 +155,20 @@
     
     
     if (self.isLeftMouseDown) {
+        CGWarpMouseCursorPosition(aLocation);
         CGEventRef event = CGEventCreateMouseEvent(NULL, kCGEventLeftMouseDragged, aLocation, kCGMouseButtonLeft);
         CGEventSetIntegerValueField(event, kCGMouseEventClickState, self.cursorClickCount);
-        CGEventPost(kCGHIDEventTap, event);
+        CGEventPost(kCGSessionEventTap, event);
         CFRelease(event);
-        
+
     } else {
         [self moveCursorTo:aLocation];
         [self updateCursorClickCountWithLocation:aLocation];
         CGEventRef event = CGEventCreateMouseEvent(NULL, kCGEventLeftMouseDown, aLocation, kCGMouseButtonLeft);
         CGEventSetIntegerValueField(event, kCGMouseEventClickState, self.cursorClickCount);
-        CGEventPost(kCGHIDEventTap, event);
+        CGEventPost(kCGSessionEventTap, event);
         CFRelease(event);
-        
+
         self.isLeftMouseDown = YES;
     }
 }
@@ -158,7 +178,7 @@
     if (self.isLeftMouseDown) {
         CGEventRef event = CGEventCreateMouseEvent(NULL, kCGEventLeftMouseUp, [self currentCursorLocation], kCGMouseButtonLeft);
         CGEventSetIntegerValueField(event, kCGMouseEventClickState, self.cursorClickCount);
-        CGEventPost(kCGHIDEventTap, event);
+        CGEventPost(kCGSessionEventTap, event);
         CFRelease(event);
         
         self.isLeftMouseDown = NO;
@@ -172,7 +192,7 @@
     
     CGEventRef event = CGEventCreateScrollWheelEvent2(NULL, kCGScrollEventUnitPixel, 2, translation.y, translation.x, 0);
     
-    CGEventPost(kCGHIDEventTap, event);
+    CGEventPost(kCGSessionEventTap, event);
     CFRelease(event);
     
     if (phase == NSTouchPhaseEnded) {
@@ -243,7 +263,7 @@
     
     CGEventSetIntegerValueField(event, 132, phase);
     
-    CGEventPost(kCGHIDEventTap, event);
+    CGEventPost(kCGSessionEventTap, event);
     CFRelease(event);
 }
 

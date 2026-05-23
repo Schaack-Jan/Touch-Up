@@ -13,27 +13,22 @@ NS_ASSUME_NONNULL_BEGIN
 
 + (instancetype)sharedInstance;
 
-
 @property CGFloat doubleClickTolerance;
 
 - (CGPoint)currentCursorLocation;
 
+- (void)saveCursorPosition;
+- (void)restoreCursorPosition;
+
 - (void)bringWindowToFrontAt:(CGPoint)aLocation;
-
 - (void)moveCursorTo:(CGPoint)aLocation;
-
 - (void)performClickAt:(CGPoint)aLocation;
-
 - (void)performSecondaryClickAt:(CGPoint)aLocation;
-
 - (void)dragCursorTo:(CGPoint)aLocation phase:(NSTouchPhase)phase;
 - (void)stopDraggingCursor;
-
 - (void)scroll:(CGPoint)translation phase:(NSTouchPhase)phase;
-
 - (void)magnifyLocationA:(CGPoint)p1 locationB:(CGPoint)p2 relativeP1:(CGPoint)r1 relP2:(CGPoint)r2;
 - (void)stopMagnifying;
-
 
 @end
 
