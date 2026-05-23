@@ -36,6 +36,7 @@ class TouchUp: NSObject, ObservableObject {
     @Published var isMagnificationEnabled = false
     @Published var isClickWindowToFrontEnabled = false
     @Published var isClickOnLiftEnabled = false
+    @Published var isCursorRestoredAfterTouch = false
     
     
     
@@ -211,11 +212,12 @@ extension TouchUp {
             "errorResistance" : 4,
             "ignoreOriginTouches" : true,
             
-            "isScrollingWithOneFingerEnabled" : true,
+            "isScrollingWithOneFingerEnabled" : false,
             "isSecondaryClickEnabled" : true,
             "isMagnificationEnabled" : true,
             "isClickWindowToFrontEnabled" : false,
-            "isClickOnLiftEnabled" : false
+            "isClickOnLiftEnabled" : false,
+            "isCursorRestoredAfterTouch" : true
         ])
         
         holdDuration = defaults.double(forKey: "holdDuration")
@@ -229,7 +231,8 @@ extension TouchUp {
             $holdDuration.assign(to: \.holdDuration, on: touchManager),
             $doubleClickDistance.assign(to: \.doubleClickTolerance, on: touchManager),
             $errorResistance.assign(to: \.errorResistance, on: touchManager),
-            $ignoreOriginTouches.assign(to: \.ignoreOriginTouches, on: touchManager)
+            $ignoreOriginTouches.assign(to: \.ignoreOriginTouches, on: touchManager),
+            $isCursorRestoredAfterTouch.assign(to: \.restoresCursorPositionAfterTouch, on: touchManager)
         ]
         
         
@@ -239,9 +242,10 @@ extension TouchUp {
         isMagnificationEnabled = defaults.bool(forKey: "isMagnificationEnabled")
         isClickWindowToFrontEnabled = defaults.bool(forKey: "isClickWindowToFrontEnabled")
         isClickOnLiftEnabled = defaults.bool(forKey: "isClickOnLiftEnabled")
+        isCursorRestoredAfterTouch = defaults.bool(forKey: "isCursorRestoredAfterTouch")
     }
-    
-    
+
+
     func savePreferences() {
         let defaults = UserDefaults.standard
         
@@ -255,6 +259,7 @@ extension TouchUp {
         defaults.set(isMagnificationEnabled, forKey: "isMagnificationEnabled")
         defaults.set(isClickWindowToFrontEnabled, forKey: "isClickWindowToFrontEnabled")
         defaults.set(isClickOnLiftEnabled, forKey: "isClickOnLiftEnabled")
+        defaults.set(isCursorRestoredAfterTouch, forKey: "isCursorRestoredAfterTouch")
     }
     
 }
@@ -294,7 +299,7 @@ extension TouchUp: TUCTouchDelegate {
             return isSecondaryClickEnabled ? .secondaryClick : .none
             
         case .TUCCursorGestureTwoFingerDrag:
-            return isScrollingWithOneFingerEnabled ? .drag : .scroll
+            return .scroll
             
         case .TUCCursorGesturePinch:
             return isMagnificationEnabled ? .magnify : .none
@@ -370,7 +375,11 @@ extension TouchUp {
         case \.errorResistance:
             return("Error Resistance",
                    "If your touchscreen is really unreliable at reporting touches, increase this slider to make inputs more stable at the cost of higher latency in detecting liftoffs.")
-            
+
+        case \.isCursorRestoredAfterTouch:
+            return ("Restore cursor after touch",
+                    "After lifting your finger, the cursor returns to where it was before the touch.")
+
         default:
             return("\(keyPath)", "")
         }
