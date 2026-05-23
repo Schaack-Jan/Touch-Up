@@ -88,13 +88,22 @@ class TouchUp: NSObject, ObservableObject {
         
        
         
+        // Perfect match: name + ID
         if let perfectMatch = connectedScreens.first(where: { $0.matching(name: cues.name, id: cues.id) == 1}) {
             self.connectedTouchscreen = perfectMatch
             self.connectionState = lastDateUSBAdded == nil ? .connectedPreferred : .connectedHotPlug
-            print("PREFERRED SCREEN FOUND")
+            print("PREFERRED SCREEN FOUND (perfect match)")
             return true
         }
-        
+
+        // Partial match by name only — ID can change after reconnect/reboot
+        if let nameMatch = connectedScreens.first(where: { $0.matching(name: cues.name, id: cues.id) >= 0.5 }) {
+            self.connectedTouchscreen = nameMatch
+            self.connectionState = .uncertain
+            print("PREFERRED SCREEN FOUND (name match)")
+            return true
+        }
+
         return false
     }
     
@@ -157,16 +166,15 @@ class TouchUp: NSObject, ObservableObject {
     
     func checkAccessibilityAccessGranted() {
         let checkOptPrompt = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as NSString
-        self.isAccessibilityAccessGranted = AXIsProcessTrustedWithOptions([checkOptPrompt: true] as CFDictionary?)
+        self.isAccessibilityAccessGranted = AXIsProcessTrustedWithOptions([checkOptPrompt: false] as CFDictionary?)
     }
-    
+
     func grantAccessibilityAccess() {
-        self.touchManager.triggerSystemAccessibilityAccessAlert()
+        let checkOptPrompt = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as NSString
+        AXIsProcessTrustedWithOptions([checkOptPrompt: true] as CFDictionary?)
         (NSApp.delegate as? AppDelegate)?.settingsWindow.close()
-        self.isAccessibilityAccessGranted = true
     }
-    
-    
+
     override init() {
         self.touchManager = TUCTouchInputManager()
         
@@ -239,7 +247,7 @@ extension TouchUp {
         
         defaults.set(holdDuration, forKey: "holdDuration")
         defaults.set(doubleClickDistance, forKey: "doubleClickDistance")
-        defaults.set(errorResistance, forKey: "$errorResistance")
+        defaults.set(errorResistance, forKey: "errorResistance")
         defaults.set(ignoreOriginTouches, forKey: "ignoreOriginTouches")
         
         defaults.set(isScrollingWithOneFingerEnabled, forKey: "isScrollingWithOneFingerEnabled")
@@ -299,8 +307,8 @@ extension TouchUp: TUCTouchDelegate {
     
     
     func touchscreenDidConnect() {
-        self.lastDateScreenAdded = Date()
-        
+        self.lastDateUSBAdded = Date()
+
         if !self.identifyHotPlug() {
             if self.connectionState.isConnected {
                 self.connectionState = .uncertain
