@@ -58,6 +58,7 @@
 }
 
 - (void)restoreCursorPosition {
+    [self cancelMomentumScroll];
     CGWarpMouseCursorPosition(self.savedCursorPosition);
     CGEventRef event = CGEventCreateMouseEvent(NULL, kCGEventMouseMoved,
                                                self.savedCursorPosition, kCGMouseButtonLeft);
@@ -65,8 +66,6 @@
     CGEventPost(kCGSessionEventTap, event);
     CFRelease(event);
 }
-
-
 
 - (void)moveCursorTo:(CGPoint)aLocation {
     [self cancelMomentumScroll];
