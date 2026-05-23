@@ -92,8 +92,14 @@
         TUCScreen *e = [[TUCScreen alloc] initWithScreen:screen
                                       frameOfFirstScreen:firstFrame];
         [myScreens addObject:e];
+        NSLog(@"[TouchUp] allScreens: id=%u name='%@' NSframe={{%.0f,%.0f},{%.0f,%.0f}} CG_frame={{%.0f,%.0f},{%.0f,%.0f}}",
+              e.id, e.name,
+              screen.frame.origin.x, screen.frame.origin.y,
+              screen.frame.size.width, screen.frame.size.height,
+              e.frame.origin.x, e.frame.origin.y,
+              e.frame.size.width, e.frame.size.height);
     }
-    
+
     return myScreens;
 }
 
