@@ -157,7 +157,7 @@ struct SettingsView: View {
     var container: some View {
         if #available(macOS 13.0, *) {
             return Form {
-                if !model.isAccessibilityAccessGranted {
+                if model.needsAccessibilityAccessPrompt {
                     Section {
                         welcomeBanner
                     } footer: {
@@ -224,6 +224,9 @@ struct SettingsView: View {
     var body: some View {
         container
         .frame(minWidth: 400, maxWidth: .infinity, minHeight: 350,  maxHeight: .infinity)
+        .onAppear {
+            model.checkAccessibilityAccessGranted()
+        }
         
     }
 }

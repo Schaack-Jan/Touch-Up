@@ -66,7 +66,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         self.model.touchManager.start()
         
         
-        if !model.isAccessibilityAccessGranted {
+        if model.needsAccessibilityAccessPrompt {
             self.showPreferences(nil)
         }
         
@@ -81,12 +81,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         self.model.touchManager.stop()
     }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        self.model.checkAccessibilityAccessGranted()
+    }
+
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
         return true
     }
     
     
     @IBAction func showPreferences(_ sender: Any?) {
+        self.model.checkAccessibilityAccessGranted()
         self.settingsWindow.makeVisible()
     }
     

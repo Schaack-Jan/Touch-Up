@@ -50,6 +50,10 @@ class TouchUp: NSObject, ObservableObject {
     
     
     @Published var isAccessibilityAccessGranted = false
+
+    var needsAccessibilityAccessPrompt: Bool {
+        isPublishingMouseEventsEnabled && !isAccessibilityAccessGranted
+    }
     
     // MARK: - Attempt to automatically determine touch screen
     
@@ -164,15 +168,18 @@ class TouchUp: NSObject, ObservableObject {
     }
     
     
-    func checkAccessibilityAccessGranted() {
+    @discardableResult
+    func checkAccessibilityAccessGranted(prompt: Bool = false) -> Bool {
         let checkOptPrompt = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as NSString
-        self.isAccessibilityAccessGranted = AXIsProcessTrustedWithOptions([checkOptPrompt: false] as CFDictionary?)
+        let isGranted = AXIsProcessTrustedWithOptions([checkOptPrompt: prompt] as CFDictionary?)
+        self.isAccessibilityAccessGranted = isGranted
+        return isGranted
     }
 
     func grantAccessibilityAccess() {
-        let checkOptPrompt = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as NSString
-        AXIsProcessTrustedWithOptions([checkOptPrompt: true] as CFDictionary?)
-        (NSApp.delegate as? AppDelegate)?.settingsWindow.close()
+        if checkAccessibilityAccessGranted(prompt: true) {
+            (NSApp.delegate as? AppDelegate)?.settingsWindow.close()
+        }
     }
 
     override init() {
