@@ -9,6 +9,8 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+@class TUCScreen;
+
 
 typedef NS_OPTIONS(NSUInteger, TUCCursorGesture) {
     _TUCCursorGestureNone           = 0,       // internal, used if two finger gesture not identifed yet
@@ -41,6 +43,8 @@ typedef NS_ENUM(NSUInteger, TUCCursorAction) {
 
 @property (strong) NSUUID *uuid;
 @property NSInteger contactID;
+@property NSInteger sourceIdentifier;
+@property (strong, nullable) TUCScreen *screen;
 
 @property BOOL isOnSurface; //tip
 @property BOOL confidenceFlag;
@@ -58,6 +62,7 @@ typedef NS_ENUM(NSUInteger, TUCCursorAction) {
 
 
 - (instancetype)initWithContactID:(NSInteger)contactID ;
+- (instancetype)initWithContactID:(NSInteger)contactID sourceIdentifier:(NSInteger)sourceIdentifier;
 
 
 

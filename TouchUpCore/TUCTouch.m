@@ -10,11 +10,16 @@
 @implementation TUCTouch
 
 - (instancetype)initWithContactID:(NSInteger)contactID {
+    return [self initWithContactID:contactID sourceIdentifier:0];
+}
+
+- (instancetype)initWithContactID:(NSInteger)contactID sourceIdentifier:(NSInteger)sourceIdentifier {
     if (self = [super init]) {
         
         _uuid = [NSUUID UUID];
         
         _contactID = contactID;
+        _sourceIdentifier = sourceIdentifier;
         
         _location = CGPointZero;
         
@@ -109,7 +114,12 @@
         phase = [NSString stringWithFormat:@"Phase %ld", self.phase];
     }
     
-    return [NSString stringWithFormat:@"Touch %ld: Location: %@ Phase:%@  OnSurface:%@", self.contactID, NSStringFromPoint(self.location), phase, [NSNumber numberWithBool:self.isOnSurface]];
+    return [NSString stringWithFormat:@"Touch %ld/%ld: Location: %@ Phase:%@  OnSurface:%@",
+            self.sourceIdentifier,
+            self.contactID,
+            NSStringFromPoint(self.location),
+            phase,
+            [NSNumber numberWithBool:self.isOnSurface]];
 }
 
 @end

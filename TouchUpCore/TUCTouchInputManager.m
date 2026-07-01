@@ -13,30 +13,82 @@
 #import <IOKit/hid/IOHIDLib.h>
 #import <IOKit/hid/IOHIDElement.h>
 
-@interface TUCTouchInputManager ()
+@class TUCTouchInputManager;
 
-// ─── IOKit HID device ─────────────────────────────────────────────────────
-@property IONotificationPortRef usbNotificationPort;
-@property io_iterator_t usbAppearedIterator;
-@property io_iterator_t usbRemovedIterator;
-@property (assign, nonatomic) IOHIDDeviceRef hidDeviceRef;
-@property (strong) NSMutableData *hidReportBuffer;
-@property CGFloat hidCurrentX;
-@property CGFloat hidCurrentY;
-@property BOOL hidCurrentButton;
+@interface TUCInputSourceState : NSObject
 
+@property NSInteger sourceIdentifier;
 @property NSInteger currentFrameID;
 
 @property (weak, nullable) TUCTouch *cursorTouch;
 @property (weak, nullable) TUCTouch *gestureAdditionalTouch;
 
 @property BOOL cursorTouchQualifiedForTap; // if the cursor entered moving state once it can no longer be interpreted as tap
-@property BOOL cursorTouchDidHold; //
+@property BOOL cursorTouchDidHold;
 @property (strong) NSDate *cursorTouchStationarySinceDate;
 
 @property CGFloat pinchDistance;
-
 @property TUCCursorGesture identifiedMultitouchGesture;
+
+@end
+
+@implementation TUCInputSourceState
+@end
+
+@interface TUCUSBHIDTouchDevice : NSObject
+
+@property (weak, nullable) TUCTouchInputManager *manager;
+@property NSInteger sourceIdentifier;
+@property uint64_t registryID;
+@property NSUInteger assignedDisplayID;
+@property NSInteger vendorID;
+@property NSInteger productID;
+@property (copy) NSString *name;
+
+@property (assign, nonatomic) IOHIDDeviceRef hidDeviceRef;
+@property (strong) NSMutableData *hidReportBuffer;
+@property CGFloat hidCurrentX;
+@property CGFloat hidCurrentY;
+@property BOOL hidCurrentButton;
+
+- (void)close;
+
+@end
+
+@implementation TUCUSBHIDTouchDevice
+
+- (void)close {
+    if (_hidDeviceRef) {
+        IOHIDDeviceUnscheduleFromRunLoop(_hidDeviceRef, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+        IOHIDDeviceClose(_hidDeviceRef, kIOHIDOptionsTypeNone);
+        CFRelease(_hidDeviceRef);
+        _hidDeviceRef = NULL;
+    }
+    _hidReportBuffer = nil;
+}
+
+- (void)dealloc {
+    [self close];
+}
+
+@end
+
+@interface TUCTouchInputManager ()
+
+// ─── IOKit HID device ─────────────────────────────────────────────────────
+@property IONotificationPortRef usbNotificationPort;
+@property io_iterator_t usbAppearedIterator;
+@property io_iterator_t usbRemovedIterator;
+@property (strong) NSMutableDictionary<NSNumber *, TUCUSBHIDTouchDevice *> *hidTouchDevicesByRegistryID;
+@property (strong) NSMutableDictionary<NSNumber *, TUCInputSourceState *> *inputSourceStatesByIdentifier;
+@property NSInteger nextTouchDeviceIdentifier;
+
+- (void)processHIDValuesForTouchDevice:(TUCUSBHIDTouchDevice *)touchDevice;
+- (void)removeHIDDeviceForService:(io_service_t)hidService;
+- (TUCScreen *)screenForTouchDevice:(TUCUSBHIDTouchDevice *)touchDevice;
+- (TUCInputSourceState *)inputSourceStateForIdentifier:(NSInteger)sourceIdentifier;
+- (void)didProcessReportForSourceIdentifier:(NSInteger)sourceIdentifier;
+- (void)cancelTouchesForSourceIdentifier:(NSInteger)sourceIdentifier;
 
 @end
 
@@ -60,7 +112,7 @@
 // We track the latest X, Y, and button state; processHIDValues assembles them.
 static void hidValueCallback(void *ctx, IOReturn result, void *sender, IOHIDValueRef value) {
     if (result != kIOReturnSuccess) return;
-    TUCTouchInputManager *mgr = (__bridge TUCTouchInputManager *)ctx;
+    TUCUSBHIDTouchDevice *touchDevice = (__bridge TUCUSBHIDTouchDevice *)ctx;
     IOHIDElementRef elem = IOHIDValueGetElement(value);
     uint32_t up   = IOHIDElementGetUsagePage(elem);
     uint32_t u    = IOHIDElementGetUsage(elem);
@@ -70,11 +122,11 @@ static void hidValueCallback(void *ctx, IOReturn result, void *sender, IOHIDValu
     if (lMax <= lMin) return;
 
     if (up == 0x01 && u == 0x30) {         // Generic Desktop X
-        mgr.hidCurrentX = (CGFloat)(val - lMin) / (CGFloat)(lMax - lMin);
+        touchDevice.hidCurrentX = (CGFloat)(val - lMin) / (CGFloat)(lMax - lMin);
     } else if (up == 0x01 && u == 0x31) {  // Generic Desktop Y
-        mgr.hidCurrentY = (CGFloat)(val - lMin) / (CGFloat)(lMax - lMin);
+        touchDevice.hidCurrentY = (CGFloat)(val - lMin) / (CGFloat)(lMax - lMin);
     } else if ((up == 0x09 && u == 0x01) || (up == 0x0D && u == 0x42)) {
-        mgr.hidCurrentButton = (val != 0);  // Button 1 or Tip Switch
+        touchDevice.hidCurrentButton = (val != 0);  // Button 1 or Tip Switch
     }
 }
 
@@ -82,7 +134,8 @@ static void hidValueCallback(void *ctx, IOReturn result, void *sender, IOHIDValu
 static void hidReportCallback(void *ctx, IOReturn result, void *sender, IOHIDReportType type,
                               uint32_t reportID, uint8_t *report, CFIndex len) {
     if (result != kIOReturnSuccess || len <= 0) return;
-    [(__bridge TUCTouchInputManager *)ctx processHIDValues];
+    TUCUSBHIDTouchDevice *touchDevice = (__bridge TUCUSBHIDTouchDevice *)ctx;
+    [touchDevice.manager processHIDValuesForTouchDevice:touchDevice];
 }
 
 static void usbAppearedCallback(void *refcon, io_iterator_t iterator) {
@@ -113,13 +166,11 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
 }
 
 - (void)stopUSBHIDListening {
-    if (_hidDeviceRef) {
-        IOHIDDeviceUnscheduleFromRunLoop(_hidDeviceRef, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
-        IOHIDDeviceClose(_hidDeviceRef, kIOHIDOptionsTypeNone);
-        CFRelease(_hidDeviceRef);
-        _hidDeviceRef = NULL;
+    for (TUCUSBHIDTouchDevice *touchDevice in [_hidTouchDevicesByRegistryID allValues]) {
+        [touchDevice close];
     }
-    _hidReportBuffer = nil;
+    [_hidTouchDevicesByRegistryID removeAllObjects];
+    [_inputSourceStatesByIdentifier removeAllObjects];
 
     if (_usbAppearedIterator) { IOObjectRelease(_usbAppearedIterator); _usbAppearedIterator = 0; }
     if (_usbRemovedIterator)  { IOObjectRelease(_usbRemovedIterator);  _usbRemovedIterator  = 0; }
@@ -134,14 +185,7 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
         if (appeared) {
             [self considerHIDDevice:service];
         } else {
-            if (_hidDeviceRef && IOObjectIsEqualTo(IOHIDDeviceGetService(_hidDeviceRef), service)) {
-                IOHIDDeviceUnscheduleFromRunLoop(_hidDeviceRef, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
-                IOHIDDeviceClose(_hidDeviceRef, kIOHIDOptionsTypeNone);
-                CFRelease(_hidDeviceRef);
-                _hidDeviceRef = NULL;
-                _hidReportBuffer = nil;
-                TouchInputManagerDidDisconnectTouchscreen((__bridge void *)self);
-            }
+            [self removeHIDDeviceForService:service];
         }
         IOObjectRelease(service);
     }
@@ -168,18 +212,70 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
         return;
     }
 
-    [self openIOHIDDevice:hidDevice];
+    [self openIOHIDDevice:hidDevice properties:props requiresAbsolutePointer:isPointer && !isDigitizer];
+}
+
+- (BOOL)hidDeviceHasUsableTouchElements:(IOHIDDeviceRef)device requiresTouchButton:(BOOL)requiresTouchButton {
+    CFArrayRef elements = IOHIDDeviceCopyMatchingElements(device, NULL, kIOHIDOptionsTypeNone);
+    if (!elements) return NO;
+
+    BOOL hasAbsoluteX = NO;
+    BOOL hasAbsoluteY = NO;
+    BOOL hasTouchButton = NO;
+
+    for (CFIndex i = 0; i < CFArrayGetCount(elements); i++) {
+        IOHIDElementRef element = (IOHIDElementRef)CFArrayGetValueAtIndex(elements, i);
+        uint32_t page = IOHIDElementGetUsagePage(element);
+        uint32_t usage = IOHIDElementGetUsage(element);
+        CFIndex lMin = IOHIDElementGetLogicalMin(element);
+        CFIndex lMax = IOHIDElementGetLogicalMax(element);
+        BOOL hasRange = lMax > lMin;
+
+        if (page == 0x01 && usage == 0x30 && hasRange && !IOHIDElementIsRelative(element)) {
+            hasAbsoluteX = YES;
+        } else if (page == 0x01 && usage == 0x31 && hasRange && !IOHIDElementIsRelative(element)) {
+            hasAbsoluteY = YES;
+        } else if ((page == 0x09 && usage == 0x01) || (page == 0x0D && usage == 0x42)) {
+            hasTouchButton = YES;
+        }
+    }
+
+    CFRelease(elements);
+    return hasAbsoluteX && hasAbsoluteY && (!requiresTouchButton || hasTouchButton);
+}
+
+- (uint64_t)registryIDForService:(io_service_t)hidService {
+    uint64_t registryID = 0;
+    kern_return_t ret = IORegistryEntryGetRegistryEntryID(hidService, &registryID);
+    return ret == KERN_SUCCESS ? registryID : (uint64_t)hidService;
+}
+
+- (NSString *)displayNameForHIDProperties:(NSDictionary *)properties {
+    NSString *product = properties[@"Product"] ?: properties[@"ProductString"];
+    NSString *manufacturer = properties[@"Manufacturer"] ?: properties[@"ManufacturerString"];
+    if (product.length > 0 && manufacturer.length > 0) {
+        return [NSString stringWithFormat:@"%@ %@", manufacturer, product];
+    }
+    return product ?: manufacturer ?: @"USB HID Touch";
 }
 
 // Open the IOHIDDevice for shared (non-exclusive) input report access.
 // For digitizer devices (usage page 0x0D), this does not trigger the Input Monitoring TCC prompt.
 // Element value callbacks update X/Y/button state; report callback fires once per complete report.
-- (void)openIOHIDDevice:(io_service_t)hidService {
-    if (_hidDeviceRef) return;
+- (void)openIOHIDDevice:(io_service_t)hidService properties:(NSDictionary *)properties requiresAbsolutePointer:(BOOL)requiresAbsolutePointer {
+    uint64_t registryID = [self registryIDForService:hidService];
+    NSNumber *registryKey = @(registryID);
+    if (registryID != 0 && _hidTouchDevicesByRegistryID[registryKey] != nil) return;
 
     IOHIDDeviceRef device = IOHIDDeviceCreate(kCFAllocatorDefault, hidService);
     if (!device) {
         NSLog(@"[TouchUp] HID: IOHIDDeviceCreate failed");
+        return;
+    }
+
+    if (![self hidDeviceHasUsableTouchElements:device requiresTouchButton:requiresAbsolutePointer]) {
+        NSLog(@"[TouchUp] HID: no usable absolute touch axes — skipping");
+        CFRelease(device);
         return;
     }
 
@@ -190,26 +286,78 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
         return;
     }
 
+    TUCUSBHIDTouchDevice *touchDevice = [TUCUSBHIDTouchDevice new];
+    touchDevice.manager = self;
+    touchDevice.sourceIdentifier = self.nextTouchDeviceIdentifier++;
+    touchDevice.registryID = registryID;
+    touchDevice.vendorID = [properties[@"VendorID"] integerValue];
+    touchDevice.productID = [properties[@"ProductID"] integerValue];
+    touchDevice.name = [self displayNameForHIDProperties:properties];
+    touchDevice.hidDeviceRef = device; // owned — caller of IOHIDDeviceCreate holds the only reference
+
+    [self screenForTouchDevice:touchDevice];
+    [self inputSourceStateForIdentifier:touchDevice.sourceIdentifier];
+
     // 512 bytes covers all USB HID reports (USB full-speed max is 64, but some devices use more)
     NSUInteger bufSize = 512;
-    _hidReportBuffer = [NSMutableData dataWithLength:bufSize];
+    touchDevice.hidReportBuffer = [NSMutableData dataWithLength:bufSize];
 
-    IOHIDDeviceRegisterInputValueCallback(device, hidValueCallback, (__bridge void *)self);
-    IOHIDDeviceRegisterInputReportCallback(device, _hidReportBuffer.mutableBytes,
-                                           (CFIndex)bufSize, hidReportCallback, (__bridge void *)self);
+    _hidTouchDevicesByRegistryID[registryKey] = touchDevice;
+
+    IOHIDDeviceRegisterInputValueCallback(device, hidValueCallback, (__bridge void *)touchDevice);
+    IOHIDDeviceRegisterInputReportCallback(device, touchDevice.hidReportBuffer.mutableBytes,
+                                           (CFIndex)bufSize, hidReportCallback, (__bridge void *)touchDevice);
     IOHIDDeviceScheduleWithRunLoop(device, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
 
-    _hidDeviceRef = device; // owned — caller of IOHIDDeviceCreate holds the only reference
-
-    TouchInputManagerDidConnectTouchscreen((__bridge void *)self);
-    NSLog(@"[TouchUp] HID: device opened, listening for reports");
+    if (_hidTouchDevicesByRegistryID.count == 1) {
+        TouchInputManagerDidConnectTouchscreen((__bridge void *)self);
+    }
+    NSLog(@"[TouchUp] HID: device opened, source=%ld name='%@' VendorID=%ld ProductID=%ld listening for reports",
+          (long)touchDevice.sourceIdentifier,
+          touchDevice.name,
+          (long)touchDevice.vendorID,
+          (long)touchDevice.productID);
 }
 
-- (void)processHIDValues {
-    CGFloat x = MAX(0.0, MIN(1.0, _hidCurrentX));
-    CGFloat y = MAX(0.0, MIN(1.0, _hidCurrentY));
-    TouchInputManagerUpdateTouchPosition((__bridge void *)self, 0, x, y, (Boolean)_hidCurrentButton, 1);
-    TouchInputManagerDidProcessReport((__bridge void *)self);
+- (void)removeHIDDeviceForService:(io_service_t)hidService {
+    NSNumber *matchedKey = nil;
+    TUCUSBHIDTouchDevice *matchedDevice = nil;
+    for (NSNumber *key in _hidTouchDevicesByRegistryID) {
+        TUCUSBHIDTouchDevice *touchDevice = _hidTouchDevicesByRegistryID[key];
+        if (touchDevice.hidDeviceRef && IOObjectIsEqualTo(IOHIDDeviceGetService(touchDevice.hidDeviceRef), hidService)) {
+            matchedKey = key;
+            matchedDevice = touchDevice;
+            break;
+        }
+    }
+
+    if (!matchedDevice) return;
+
+    [self cancelTouchesForSourceIdentifier:matchedDevice.sourceIdentifier];
+    [_inputSourceStatesByIdentifier removeObjectForKey:@(matchedDevice.sourceIdentifier)];
+    [matchedDevice close];
+    [_hidTouchDevicesByRegistryID removeObjectForKey:matchedKey];
+
+    NSLog(@"[TouchUp] HID: device removed, source=%ld name='%@'",
+          (long)matchedDevice.sourceIdentifier,
+          matchedDevice.name);
+
+    if (_hidTouchDevicesByRegistryID.count == 0) {
+        TouchInputManagerDidDisconnectTouchscreen((__bridge void *)self);
+    }
+}
+
+- (void)processHIDValuesForTouchDevice:(TUCUSBHIDTouchDevice *)touchDevice {
+    CGFloat x = MAX(0.0, MIN(1.0, touchDevice.hidCurrentX));
+    CGFloat y = MAX(0.0, MIN(1.0, touchDevice.hidCurrentY));
+    TUCScreen *screen = [self screenForTouchDevice:touchDevice];
+    [self updateTouch:0
+         withLocation:CGPointMake(x, y)
+            onSurface:(Boolean)touchDevice.hidCurrentButton
+    tooLargeForFinger:1
+               screen:screen
+     sourceIdentifier:touchDevice.sourceIdentifier];
+    [self didProcessReportForSourceIdentifier:touchDevice.sourceIdentifier];
 }
 
 - (void)didConnectTouchscreen {
@@ -227,32 +375,37 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
 #pragma mark - Reacting to HID Events
 
 - (void)didProcessReport {
+    [self didProcessReportForSourceIdentifier:0];
+}
+
+- (void)didProcessReportForSourceIdentifier:(NSInteger)sourceIdentifier {
+    TUCInputSourceState *sourceState = [self inputSourceStateForIdentifier:sourceIdentifier];
     // go through all touches: if the frame is not the latest one, the touch might be old and should be removed.
     
     for (TUCTouch *touch in self.touchSet) {
         
-        if (touch.lastUpdated + self.errorResistance < self.currentFrameID) {
+        if (touch.sourceIdentifier == sourceIdentifier && touch.lastUpdated + self.errorResistance < sourceState.currentFrameID) {
             [touch setPhase:NSTouchPhaseCancelled];
             [self removeTouch:touch now:NO];
         }
     }
     
-    if ([[self activeTouches] count] == 0) {
-        [self stopCurrentGesture];
+    if ([[self activeTouchesForSourceIdentifier:sourceIdentifier] count] == 0) {
+        [self stopCurrentGestureForSourceState:sourceState];
     }
     
-    ++self.currentFrameID;
+    ++sourceState.currentFrameID;
     
-    [self processTouchesForCursorInput];
+    [self processTouchesForCursorInputForSourceState:sourceState];
     
 }
 
 
-- (void)stopCurrentGesture {
+- (void)stopCurrentGestureForSourceState:(TUCInputSourceState *)sourceState {
     [[TUCCursorUtilities sharedInstance] stopDraggingCursor];
     [[TUCCursorUtilities sharedInstance] stopMagnifying];
 
-    self.identifiedMultitouchGesture = _TUCCursorGestureNone;
+    sourceState.identifiedMultitouchGesture = _TUCCursorGestureNone;
 }
 
 
@@ -261,28 +414,46 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
  Most important event handling callback: it posts the events to the system where the touches need to go
  */
 - (void)updateTouch:(NSInteger)contactID withLocation:(CGPoint)digitizerPoint onSurface:(BOOL)isOnSurface tooLargeForFinger:(BOOL)confidenceFlag {
+    [self updateTouch:contactID
+         withLocation:digitizerPoint
+            onSurface:isOnSurface
+    tooLargeForFinger:confidenceFlag
+               screen:[self touchscreen]
+     sourceIdentifier:0];
+}
+
+- (void)updateTouch:(NSInteger)contactID
+       withLocation:(CGPoint)digitizerPoint
+          onSurface:(BOOL)isOnSurface
+  tooLargeForFinger:(BOOL)confidenceFlag
+             screen:(nullable TUCScreen *)screen
+   sourceIdentifier:(NSInteger)sourceIdentifier {
     
     // assume that this is an erroneous message!!!
     if (self.ignoreOriginTouches && CGPointEqualToPoint(digitizerPoint, CGPointZero)) {
         return;
     }
+
+    TUCInputSourceState *sourceState = [self inputSourceStateForIdentifier:sourceIdentifier];
+    TUCScreen *touchscreen = screen ?: [self touchscreen];
     
-    CGPoint point = [self convertDigitizerPointToRelativeScreenPoint:digitizerPoint];
+    CGPoint point = [self convertDigitizerPoint:digitizerPoint toRelativeScreenPointOnScreen:touchscreen];
     
     BOOL isNewTouch = NO;
-    TUCTouch *touch = [self obtainTouchWithID:contactID isNew:&isNewTouch];
+    TUCTouch *touch = [self obtainTouchWithID:contactID sourceIdentifier:sourceIdentifier isNew:&isNewTouch];
     
-    if (isNewTouch && (self.cursorTouch == nil || !self.cursorTouch.isActive)) {
-        self.cursorTouch = touch;
-        self.cursorTouchQualifiedForTap = YES;
-        self.cursorTouchDidHold = NO;
-        self.cursorTouchStationarySinceDate = nil;
+    if (isNewTouch && (sourceState.cursorTouch == nil || !sourceState.cursorTouch.isActive)) {
+        sourceState.cursorTouch = touch;
+        sourceState.cursorTouchQualifiedForTap = YES;
+        sourceState.cursorTouchDidHold = NO;
+        sourceState.cursorTouchStationarySinceDate = nil;
     }
     
     [touch setLocation: point];
     [touch setIsOnSurface:isOnSurface];
     [touch setConfidenceFlag:confidenceFlag];
-    [touch setLastUpdated:self.currentFrameID];
+    [touch setScreen:touchscreen];
+    [touch setLastUpdated:sourceState.currentFrameID];
     
     if (!isOnSurface) {
         [touch setPhase: NSTouchPhaseEnded];
@@ -295,17 +466,17 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
     if(touch.previousPhase != NSTouchPhaseEnded && !isNewTouch) {
         // update to an existing touch... check if stationary or not
         CGFloat digitizerRelDistance = sqrt(pow(touch.location.x - touch.previousLocation.x, 2) + pow(touch.location.y - touch.previousLocation.y, 2));
-        CGFloat screenSize = [self touchscreen].physicalSize.width;
+        CGFloat screenSize = touchscreen.physicalSize.width;
         BOOL isStationary = (digitizerRelDistance * screenSize) < 0.1;
 //        BOOL isStationary = CGPointEqualToPoint(touch.location, touch.previousLocation);
         
-        if (touch.uuid == self.cursorTouch.uuid) {
+        if (touch.uuid == sourceState.cursorTouch.uuid) {
             if (!isStationary) {
-                self.cursorTouchQualifiedForTap = NO;
-                self.cursorTouchStationarySinceDate = nil;
+                sourceState.cursorTouchQualifiedForTap = NO;
+                sourceState.cursorTouchStationarySinceDate = nil;
                 
             } else if (touch.phase !=  NSTouchPhaseStationary) {
-                self.cursorTouchStationarySinceDate = [NSDate date];
+                sourceState.cursorTouchStationarySinceDate = [NSDate date];
             }
         }
         
@@ -321,8 +492,9 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
 
 - (void)updateTouch:(NSInteger)contactID withSize:(CGSize)size azimuth:(CGFloat)azimuth {
     BOOL isNewTouch = NO;
-    TUCTouch *touch = [self obtainTouchWithID:contactID isNew:&isNewTouch];
-    [touch setLastUpdated:self.currentFrameID];
+    TUCTouch *touch = [self obtainTouchWithID:contactID sourceIdentifier:0 isNew:&isNewTouch];
+    TUCInputSourceState *sourceState = [self inputSourceStateForIdentifier:0];
+    [touch setLastUpdated:sourceState.currentFrameID];
     
     [touch setSize:size];
     [touch setAzimuth:azimuth];
@@ -334,57 +506,59 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
 
 
 
-- (void)processTouchesForCursorInput {
+- (void)processTouchesForCursorInputForSourceState:(TUCInputSourceState *)sourceState {
     
-    if(!self.cursorTouch || !self.postMouseEvents) {
+    if(!sourceState.cursorTouch || !self.postMouseEvents) {
         return;
     }
     
-    TUCTouch *cursorTouch = self.cursorTouch;
+    TUCTouch *cursorTouch = sourceState.cursorTouch;
     
     
-    NSArray<TUCTouch *> *touches = [[self activeTouches] allObjects];
+    NSArray<TUCTouch *> *touches = [[self activeTouchesForSourceIdentifier:sourceState.sourceIdentifier] allObjects];
     NSTouchPhase phase = cursorTouch.phase;
     
     
     if (phase == NSTouchPhaseBegan) {
-        [self performMouseEventForGesture:TUCCursorGestureTouchDown];
+        [self performMouseEventForGesture:TUCCursorGestureTouchDown sourceState:sourceState];
         return;
     }
     
     
     else if (phase == NSTouchPhaseStationary) {
         NSTimeInterval holdDuration = 0;
-        if (self.cursorTouchStationarySinceDate != nil) {
-            holdDuration = [[NSDate date] timeIntervalSinceDate:self.cursorTouchStationarySinceDate];
+        if (sourceState.cursorTouchStationarySinceDate != nil) {
+            holdDuration = [[NSDate date] timeIntervalSinceDate:sourceState.cursorTouchStationarySinceDate];
         }
-        if (self.cursorTouchQualifiedForTap && holdDuration > self.holdDuration) {
+        if (sourceState.cursorTouchQualifiedForTap && holdDuration > self.holdDuration) {
             // the user left the finger on the screen for the min duration required to produce a hold
-            self.cursorTouchDidHold = YES;
+            sourceState.cursorTouchDidHold = YES;
         }
         
-        [self checkForSecondaryClick];
+        [self checkForSecondaryClickForSourceState:sourceState];
         
         return;
     }
     
     
     else if (phase == NSTouchPhaseEnded) {
-        if (self.identifiedMultitouchGesture == _TUCCursorGestureNone ) {
-            if (self.cursorTouchDidHold) {
-                [self performMouseEventForGesture:TUCCursorGestureHoldAndDrag];
-            } else if (!self.cursorTouchQualifiedForTap) {
-                [self performMouseEventForGesture:TUCCursorGestureDrag];
+        if (sourceState.identifiedMultitouchGesture == _TUCCursorGestureNone ) {
+            if (sourceState.cursorTouchDidHold) {
+                [self performMouseEventForGesture:TUCCursorGestureHoldAndDrag sourceState:sourceState];
+            } else if (!sourceState.cursorTouchQualifiedForTap) {
+                [self performMouseEventForGesture:TUCCursorGestureDrag sourceState:sourceState];
             }
         }
         
-        [self stopCurrentGesture];
+        TUCCursorGesture endedGesture = sourceState.identifiedMultitouchGesture;
+        BOOL qualifiedForTap = sourceState.cursorTouchQualifiedForTap;
+        [self stopCurrentGestureForSourceState:sourceState];
         
-        if (self.cursorTouchQualifiedForTap) {
-            [self performMouseEventForGesture:TUCCursorGestureTap];
+        if (qualifiedForTap) {
+            [self performMouseEventForGesture:TUCCursorGestureTap sourceState:sourceState];
         } else {
-            if (self.identifiedMultitouchGesture != _TUCCursorGestureNone) {
-                [self performMouseEventForGesture:self.identifiedMultitouchGesture];
+            if (endedGesture != _TUCCursorGestureNone) {
+                [self performMouseEventForGesture:endedGesture sourceState:sourceState];
             }
         }
         
@@ -393,26 +567,26 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
     
     
     else if (phase == NSTouchPhaseCancelled) {
-        [self stopCurrentGesture];
+        [self stopCurrentGestureForSourceState:sourceState];
         return;
     }
     
-    if ([self checkForSecondaryClick]) {
+    if ([self checkForSecondaryClickForSourceState:sourceState]) {
         return;
     }
     
     if ([touches count] == 2 && [touches containsObject: cursorTouch]) {
         // check if we need to initiate two finger drag, pinch, ...
-        if (self.identifiedMultitouchGesture == _TUCCursorGestureNone ) {
+        if (sourceState.identifiedMultitouchGesture == _TUCCursorGestureNone ) {
 
             TUCTouch *otherTouch = touches[1];
             if (otherTouch.uuid == cursorTouch.uuid) {
                 otherTouch = touches[0];
             }
             
-            self.gestureAdditionalTouch = otherTouch;
+            sourceState.gestureAdditionalTouch = otherTouch;
             
-            if (self.gestureAdditionalTouch.isActive) {
+            if (sourceState.gestureAdditionalTouch.isActive) {
                 CGPoint trajectoryA = [cursorTouch trajectorySign];
                 CGPoint trajectoryB = [otherTouch trajectorySign];
                 
@@ -421,56 +595,56 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
                     && !CGPointEqualToPoint(trajectoryB, CGPointZero)) {
                     
                     if (!CGPointEqualToPoint(trajectoryA, trajectoryB)) {
-                        self.identifiedMultitouchGesture = TUCCursorGesturePinch;
+                        sourceState.identifiedMultitouchGesture = TUCCursorGesturePinch;
                     }
 //                    else {
-//                        self.identifiedMultitouchGesture = TUCCursorGestureTwoFingerDrag;
+//                        sourceState.identifiedMultitouchGesture = TUCCursorGestureTwoFingerDrag;
 //                    }
                 }
                 
             } else {
                 // secondary click
-                [self removeTouch:self.gestureAdditionalTouch now:YES];
-                self.gestureAdditionalTouch = nil;
-                [self performMouseEventForGesture:TUCCursorGestureTapSecondFinger];
+                [self removeTouch:sourceState.gestureAdditionalTouch now:YES];
+                sourceState.gestureAdditionalTouch = nil;
+                [self performMouseEventForGesture:TUCCursorGestureTapSecondFinger sourceState:sourceState];
             }
         }
         
         // other finger lifted, gesture ended
-        if (!self.gestureAdditionalTouch.isActive) {
-            [self stopCurrentGesture];
+        if (!sourceState.gestureAdditionalTouch.isActive) {
+            [self stopCurrentGestureForSourceState:sourceState];
         }
         
         
-        if(self.identifiedMultitouchGesture != _TUCCursorGestureNone) {
-            [self performMouseEventForGesture:self.identifiedMultitouchGesture];
+        if(sourceState.identifiedMultitouchGesture != _TUCCursorGestureNone) {
+            [self performMouseEventForGesture:sourceState.identifiedMultitouchGesture sourceState:sourceState];
             return;
         }
         
     }
     
 
-    if (self.cursorTouchDidHold) {
-        [self performMouseEventForGesture:TUCCursorGestureHoldAndDrag];
+    if (sourceState.cursorTouchDidHold) {
+        [self performMouseEventForGesture:TUCCursorGestureHoldAndDrag sourceState:sourceState];
     } else {
-        [self performMouseEventForGesture:TUCCursorGestureDrag];
+        [self performMouseEventForGesture:TUCCursorGestureDrag sourceState:sourceState];
     }
 }
 
 
-- (BOOL)checkForSecondaryClick {
-//    if (self.identifiedMultitouchGesture != _TUCCursorGestureNone) {
+- (BOOL)checkForSecondaryClickForSourceState:(TUCInputSourceState *)sourceState {
+//    if (sourceState.identifiedMultitouchGesture != _TUCCursorGestureNone) {
 //        return NO;
 //    }
     
-    NSSet<TUCTouch *> *touchesInProximity = [self touchesInProximityTo:self.cursorTouch.location maxDistance:60];
-    if (touchesInProximity.count >= 2 && self.identifiedMultitouchGesture == _TUCCursorGestureNone) {
+    NSSet<TUCTouch *> *touchesInProximity = [self touchesInProximityTo:sourceState.cursorTouch.location maxDistance:60 sourceState:sourceState];
+    if (touchesInProximity.count >= 2 && sourceState.identifiedMultitouchGesture == _TUCCursorGestureNone) {
 
         // TUCCursorGestureTwoFingerTap
         NSPredicate *p1 = [NSPredicate predicateWithFormat:@"phase == %d", NSTouchPhaseEnded];
         NSPredicate *p2 = [NSPredicate predicateWithFormat:@"phase == %d", NSTouchPhaseCancelled];
 
-        NSPredicate *p3 = [NSPredicate predicateWithFormat:@"contactID != %d", self.cursorTouch.contactID];
+        NSPredicate *p3 = [NSPredicate predicateWithFormat:@"contactID != %d", sourceState.cursorTouch.contactID];
 
         NSPredicate *p4 = [NSCompoundPredicate orPredicateWithSubpredicates:@[p1, p2]];
         NSPredicate *p5 = [NSCompoundPredicate andPredicateWithSubpredicates:@[p3, p4]];
@@ -482,7 +656,7 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
                 [self removeTouch:touchToRemove now:YES];
             }
 
-            [self performMouseEventForGesture:TUCCursorGestureTapSecondFinger];
+            [self performMouseEventForGesture:TUCCursorGestureTapSecondFinger sourceState:sourceState];
             return YES;
         }
     }
@@ -490,12 +664,13 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
 }
 
 
-- (void)performMouseEventForGesture:(TUCCursorGesture)gesture {
-    TUCTouch *touch = self.cursorTouch;
+- (void)performMouseEventForGesture:(TUCCursorGesture)gesture sourceState:(TUCInputSourceState *)sourceState {
+    TUCTouch *touch = sourceState.cursorTouch;
 
-    TUCScreen *ts = [self touchscreen];
-    CGPoint screenLocation = [self convertScreenPointRelativeToAbsolute:touch.location];
-    CGPoint location2ndFinger = [self convertScreenPointRelativeToAbsolute:self.gestureAdditionalTouch.location];
+    TUCScreen *ts = touch.screen ?: [self touchscreen];
+    TUCScreen *secondFingerScreen = sourceState.gestureAdditionalTouch.screen ?: ts;
+    CGPoint screenLocation = [self convertScreenPointRelativeToAbsolute:touch.location onScreen:ts];
+    CGPoint location2ndFinger = [self convertScreenPointRelativeToAbsolute:sourceState.gestureAdditionalTouch.location onScreen:secondFingerScreen];
 
     NSLog(@"[TouchUp] screen='%@' frame={{%.0f,%.0f},{%.0f,%.0f}} relTouch=(%.3f,%.3f) absTouch=(%.0f,%.0f)",
           ts.name,
@@ -508,7 +683,7 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
     
     TUCCursorAction action = [self actionForGesture:gesture];
     
-    CGFloat doubleClickSpan = self.doubleClickTolerance * [[self touchscreen] pixelsPerMM];
+    CGFloat doubleClickSpan = self.doubleClickTolerance * [ts pixelsPerMM];
     [[TUCCursorUtilities sharedInstance] setDoubleClickTolerance:doubleClickSpan];
     
     switch (action) {
@@ -521,7 +696,7 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
             
         case TUCCursorActionMoveClickIfNeeded:
             [utils moveCursorTo:screenLocation];
-            if ([self isLocationOutsideFrontmostWindow:screenLocation]) {
+            if ([self isLocationOutsideFrontmostWindow:screenLocation onScreen:ts]) {
                 [utils performClickAt:screenLocation];
             }
             
@@ -547,7 +722,7 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
             break;
             
         case TUCCursorActionScroll: {
-            CGPoint prevLocation = [self convertScreenPointRelativeToAbsolute:touch.previousLocation];
+            CGPoint prevLocation = [self convertScreenPointRelativeToAbsolute:touch.previousLocation onScreen:ts];
             CGPoint translation = CGPointMake(screenLocation.x - prevLocation.x,
                                               screenLocation.y - prevLocation.y);
             [utils scroll:translation phase:touch.phase];
@@ -557,9 +732,9 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
         case TUCCursorActionMagnify:
             [utils magnifyLocationA:screenLocation
                           locationB:location2ndFinger
-            relativeP1:self.cursorTouch.location relP2:self.gestureAdditionalTouch.location];
+            relativeP1:sourceState.cursorTouch.location relP2:sourceState.gestureAdditionalTouch.location];
             
-            if (touch.phase == NSTouchPhaseEnded || self.gestureAdditionalTouch.phase == NSTouchPhaseEnded) {
+            if (touch.phase == NSTouchPhaseEnded || sourceState.gestureAdditionalTouch.phase == NSTouchPhaseEnded) {
                 [utils stopMagnifying];
             }
             break;
@@ -602,6 +777,13 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
     return [self.touchSet filteredSetUsingPredicate:predicate];
 }
 
+- (NSSet<TUCTouch *> *)activeTouchesForSourceIdentifier:(NSInteger)sourceIdentifier {
+    NSPredicate *p = [NSPredicate predicateWithBlock:^BOOL(TUCTouch *touch, NSDictionary *bindings) {
+        return touch.sourceIdentifier == sourceIdentifier && touch.isActive;
+    }];
+    return [self.touchSet filteredSetUsingPredicate:p];
+}
+
 
 
 - (CGFloat)distanceBetweenPoint:(CGPoint)p1 and:(CGPoint)p2 {
@@ -615,13 +797,17 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
 /**
  maxDistance in mm
  */
-- (NSSet<TUCTouch *> *)touchesInProximityTo:(CGPoint)point maxDistance:(CGFloat)mmDistance {
+- (NSSet<TUCTouch *> *)touchesInProximityTo:(CGPoint)point maxDistance:(CGFloat)mmDistance sourceState:(TUCInputSourceState *)sourceState {
     
-    CGFloat screenDistance = mmDistance * [[self touchscreen] pixelsPerMM];
-    CGPoint distance = CGPointMake(screenDistance /  [self touchscreen].frame.size.width,
-                                   screenDistance /  [self touchscreen].frame.size.height);
+    TUCScreen *touchscreen = sourceState.cursorTouch.screen ?: [self touchscreen];
+    CGFloat screenDistance = mmDistance * [touchscreen pixelsPerMM];
+    CGPoint distance = CGPointMake(screenDistance /  touchscreen.frame.size.width,
+                                   screenDistance /  touchscreen.frame.size.height);
     
     NSPredicate * predicate = [NSPredicate predicateWithBlock: ^BOOL(TUCTouch *t, NSDictionary *bind) {
+        if (t.sourceIdentifier != sourceState.sourceIdentifier) {
+            return NO;
+        }
         
         CGFloat dx = [t location].x - point.x;
         CGFloat dy = [t location].y - point.y;
@@ -661,14 +847,30 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
     });
 }
 
+- (void)cancelTouchesForSourceIdentifier:(NSInteger)sourceIdentifier {
+    NSArray<TUCTouch *> *touches = [self.touchSet allObjects];
+    for (TUCTouch *touch in touches) {
+        if (touch.sourceIdentifier == sourceIdentifier) {
+            [touch setPhase:NSTouchPhaseCancelled];
+            [self removeTouch:touch now:YES];
+        }
+    }
+}
+
 
 /**
  Checks the touch set if a touch exists
  */
 - (TUCTouch *)findTouchWithID:(NSInteger)contactID includingPastTouches:(BOOL)includePastTouches {
-    NSSet *set = includePastTouches ? self.touchSet : [self activeTouches];
+    return [self findTouchWithID:contactID sourceIdentifier:0 includingPastTouches:includePastTouches];
+}
+
+- (TUCTouch *)findTouchWithID:(NSInteger)contactID sourceIdentifier:(NSInteger)sourceIdentifier includingPastTouches:(BOOL)includePastTouches {
+    NSSet *set = includePastTouches ? self.touchSet : [self activeTouchesForSourceIdentifier:sourceIdentifier];
     
-    NSPredicate *predicate = [NSPredicate predicateWithFormat:@"contactID == %d", contactID];
+    NSPredicate *predicate = [NSPredicate predicateWithBlock:^BOOL(TUCTouch *touch, NSDictionary *bindings) {
+        return touch.contactID == contactID && touch.sourceIdentifier == sourceIdentifier;
+    }];
     TUCTouch *touch = [[set filteredSetUsingPredicate:predicate] anyObject];
     return touch;
 }
@@ -677,10 +879,14 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
  Returns the existing touch object or a new one if this ID does not exist in the set yet.
  */
 - (TUCTouch *)obtainTouchWithID:(NSInteger)contactID isNew:(BOOL*)isNew {
-    TUCTouch *touch = [self findTouchWithID:contactID includingPastTouches:NO];
+    return [self obtainTouchWithID:contactID sourceIdentifier:0 isNew:isNew];
+}
+
+- (TUCTouch *)obtainTouchWithID:(NSInteger)contactID sourceIdentifier:(NSInteger)sourceIdentifier isNew:(BOOL*)isNew {
+    TUCTouch *touch = [self findTouchWithID:contactID sourceIdentifier:sourceIdentifier includingPastTouches:NO];
     *isNew = NO;
     if(!touch) {
-        touch = [[TUCTouch alloc] initWithContactID:contactID];
+        touch = [[TUCTouch alloc] initWithContactID:contactID sourceIdentifier:sourceIdentifier];
         [self.touchSet addObject:touch];
         *isNew = YES;
     }
@@ -698,7 +904,11 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
  If the display is rotated, we need to rotate these points
  */
 - (CGPoint)convertDigitizerPointToRelativeScreenPoint:(CGPoint)devicePoint {
-    CGFloat rotation = [self touchscreen].rotation;
+    return [self convertDigitizerPoint:devicePoint toRelativeScreenPointOnScreen:[self touchscreen]];
+}
+
+- (CGPoint)convertDigitizerPoint:(CGPoint)devicePoint toRelativeScreenPointOnScreen:(TUCScreen *)screen {
+    CGFloat rotation = screen.rotation;
     if (rotation == 0) {
         return devicePoint;
         
@@ -718,7 +928,11 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
 
 
 - (CGPoint)convertScreenPointRelativeToAbsolute:(CGPoint)relativePoint {
-    return [[self touchscreen] convertPointRelativeToAbsolute:relativePoint];
+    return [self convertScreenPointRelativeToAbsolute:relativePoint onScreen:[self touchscreen]];
+}
+
+- (CGPoint)convertScreenPointRelativeToAbsolute:(CGPoint)relativePoint onScreen:(TUCScreen *)screen {
+    return [screen convertPointRelativeToAbsolute:relativePoint];
 }
 
 
@@ -731,12 +945,157 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
     return [[TUCScreen allScreens] firstObject];
 }
 
+- (NSString *)normalizedDisplayMatchingString:(NSString *)string {
+    NSMutableString *normalized = [NSMutableString string];
+    NSString *lowercase = [string lowercaseString];
+    NSCharacterSet *allowed = [NSCharacterSet alphanumericCharacterSet];
+    for (NSUInteger i = 0; i < lowercase.length; i++) {
+        unichar character = [lowercase characterAtIndex:i];
+        if ([allowed characterIsMember:character]) {
+            [normalized appendFormat:@"%C", character];
+        }
+    }
+    return normalized;
+}
+
+- (TUCScreen *)screenMatchingTouchDeviceName:(NSString *)deviceName
+                                     screens:(NSArray<TUCScreen *> *)screens
+                         excludingDisplayIDs:(NSSet<NSNumber *> *)excludedDisplayIDs {
+    NSString *normalizedDeviceName = [self normalizedDisplayMatchingString:deviceName];
+    if (normalizedDeviceName.length < 4) return nil;
+
+    for (TUCScreen *screen in screens) {
+        if ([excludedDisplayIDs containsObject:@(screen.id)]) continue;
+
+        NSString *normalizedScreenName = [self normalizedDisplayMatchingString:screen.name];
+        if (normalizedScreenName.length < 4) continue;
+
+        if ([normalizedScreenName containsString:normalizedDeviceName] ||
+            [normalizedDeviceName containsString:normalizedScreenName]) {
+            return screen;
+        }
+    }
+
+    NSArray<NSString *> *tokens = [deviceName componentsSeparatedByCharactersInSet:[[NSCharacterSet alphanumericCharacterSet] invertedSet]];
+    for (NSString *token in tokens) {
+        NSString *normalizedToken = [self normalizedDisplayMatchingString:token];
+        if (normalizedToken.length < 4) continue;
+
+        for (TUCScreen *screen in screens) {
+            if ([excludedDisplayIDs containsObject:@(screen.id)]) continue;
+
+            NSString *normalizedScreenName = [self normalizedDisplayMatchingString:screen.name];
+            if ([normalizedScreenName containsString:normalizedToken]) {
+                return screen;
+            }
+        }
+    }
+
+    return nil;
+}
+
+- (TUCScreen *)screenWithDisplayID:(NSUInteger)displayID screens:(NSArray<TUCScreen *> *)screens {
+    for (TUCScreen *screen in screens) {
+        if (screen.id == displayID) {
+            return screen;
+        }
+    }
+    return nil;
+}
+
+- (TUCScreen *)screenForTouchDevice:(TUCUSBHIDTouchDevice *)touchDevice {
+    NSArray<TUCScreen *> *screens = (NSArray<TUCScreen *> *)[TUCScreen allScreens];
+    if (screens.count == 0) return nil;
+
+    if (touchDevice.assignedDisplayID != 0) {
+        TUCScreen *existingScreen = [self screenWithDisplayID:touchDevice.assignedDisplayID screens:screens];
+        if (existingScreen) return existingScreen;
+    }
+
+    NSMutableSet<NSNumber *> *assignedDisplayIDs = [NSMutableSet set];
+    for (TUCUSBHIDTouchDevice *otherDevice in [_hidTouchDevicesByRegistryID allValues]) {
+        if (otherDevice != touchDevice && otherDevice.assignedDisplayID != 0) {
+            [assignedDisplayIDs addObject:@(otherDevice.assignedDisplayID)];
+        }
+    }
+
+    TUCScreen *nameMatch = [self screenMatchingTouchDeviceName:touchDevice.name
+                                                       screens:screens
+                                           excludingDisplayIDs:assignedDisplayIDs];
+    if (nameMatch) {
+        touchDevice.assignedDisplayID = nameMatch.id;
+        NSLog(@"[TouchUp] HID: source=%ld name='%@' matched display '%@'",
+              (long)touchDevice.sourceIdentifier,
+              touchDevice.name,
+              nameMatch.name);
+        return nameMatch;
+    }
+
+    if (_hidTouchDevicesByRegistryID.count <= 1) {
+        TUCScreen *preferred = [self touchscreen];
+        if (preferred) {
+            touchDevice.assignedDisplayID = preferred.id;
+            NSLog(@"[TouchUp] HID: source=%ld name='%@' using preferred display '%@'",
+                  (long)touchDevice.sourceIdentifier,
+                  touchDevice.name,
+                  preferred.name);
+            return preferred;
+        }
+    }
+
+    TUCScreen *preferred = [self touchscreen];
+    if (preferred && ![assignedDisplayIDs containsObject:@(preferred.id)]) {
+        touchDevice.assignedDisplayID = preferred.id;
+        NSLog(@"[TouchUp] HID: source=%ld name='%@' using unassigned preferred display '%@'",
+              (long)touchDevice.sourceIdentifier,
+              touchDevice.name,
+              preferred.name);
+        return preferred;
+    }
+
+    for (TUCScreen *screen in screens) {
+        if (![assignedDisplayIDs containsObject:@(screen.id)]) {
+            touchDevice.assignedDisplayID = screen.id;
+            NSLog(@"[TouchUp] HID: source=%ld name='%@' using next unassigned display '%@'",
+                  (long)touchDevice.sourceIdentifier,
+                  touchDevice.name,
+                  screen.name);
+            return screen;
+        }
+    }
+
+    TUCScreen *fallback = preferred ?: [screens firstObject];
+    touchDevice.assignedDisplayID = fallback.id;
+    NSLog(@"[TouchUp] HID: source=%ld name='%@' using fallback display '%@'",
+          (long)touchDevice.sourceIdentifier,
+          touchDevice.name,
+          fallback.name);
+    return fallback;
+}
+
+- (TUCInputSourceState *)inputSourceStateForIdentifier:(NSInteger)sourceIdentifier {
+    NSNumber *key = @(sourceIdentifier);
+    TUCInputSourceState *sourceState = _inputSourceStatesByIdentifier[key];
+    if (!sourceState) {
+        sourceState = [TUCInputSourceState new];
+        sourceState.sourceIdentifier = sourceIdentifier;
+        sourceState.currentFrameID = 0;
+        sourceState.identifiedMultitouchGesture = _TUCCursorGestureNone;
+        _inputSourceStatesByIdentifier[key] = sourceState;
+    }
+    return sourceState;
+}
+
 
 
 - (BOOL)isPointInMenuBar:(CGPoint)point {
+    return [self isPointInMenuBar:point onScreen:[self touchscreen]];
+}
+
+- (BOOL)isPointInMenuBar:(CGPoint)point onScreen:(TUCScreen *)screen {
     CGFloat menuBarHeight = [[[NSApplication sharedApplication] mainMenu] menuBarHeight];
 
-    CGRect screenFrame = [self touchscreen].frame;
+    CGRect screenFrame = screen.frame;
     CGRect menuBarFrame = CGRectMake(screenFrame.origin.x,
                                      screenFrame.origin.y * -1,
                                      screenFrame.size.width,
@@ -750,8 +1109,12 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
 
 
 - (BOOL)isLocationOutsideFrontmostWindow:(CGPoint)point {
+    return [self isLocationOutsideFrontmostWindow:point onScreen:[self touchscreen]];
+}
+
+- (BOOL)isLocationOutsideFrontmostWindow:(CGPoint)point onScreen:(TUCScreen *)screen {
     
-    if ([self isPointInMenuBar:point]) {
+    if ([self isPointInMenuBar:point onScreen:screen]) {
         return NO;
     }
     
@@ -819,11 +1182,9 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
         self.touchSet = [NSMutableSet new];
         self.postMouseEvents = YES;
         
-        self.cursorTouchQualifiedForTap = NO;
-        self.cursorTouchStationarySinceDate = nil;
-        
-        self.currentFrameID = 0;
-        self.identifiedMultitouchGesture = _TUCCursorGestureNone;
+        self.hidTouchDevicesByRegistryID = [NSMutableDictionary dictionary];
+        self.inputSourceStatesByIdentifier = [NSMutableDictionary dictionary];
+        self.nextTouchDeviceIdentifier = 1;
         
         self.doubleClickTolerance = 5;
         self.holdDuration = 0.08;
@@ -840,7 +1201,14 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
     
     for (TUCTouch *touch in [[self.touchSet allObjects] sortedArrayUsingSelector:@selector(compareWithAnotherTouch:)] ) {
         [str appendString: [NSString stringWithFormat:@"  %@", [touch debugDescription]] ];
-        if (touch.contactID == self.cursorTouch.contactID) {
+        BOOL isCursorTouch = NO;
+        for (TUCInputSourceState *sourceState in [_inputSourceStatesByIdentifier allValues]) {
+            if (sourceState.cursorTouch.uuid == touch.uuid) {
+                isCursorTouch = YES;
+                break;
+            }
+        }
+        if (isCursorTouch) {
             [str appendString: @" <<<CURSOR>>>\n" ];
         } else {
             [str appendString: @"\n" ];
