@@ -17,16 +17,36 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Welcome to Touch Up 🐑")
                     .font(.largeTitle)
-                Text("Touch Up converts USB HID data from any Windows certified touchscreen to mouse events.\nInjecting mouse events requires access to accessibility APIs. You can allow this by clicking the button below.")
+                Text("Touch Up converts USB HID data from any Windows certified touchscreen to mouse events.\nReading touch reports requires macOS Input Monitoring access, and injecting mouse events requires Accessibility access. Touch Up filters for USB touchscreens and does not listen to keyboard input.")
             }
             
             HStack {
                 Spacer()
                 Button {
-                    model.grantAccessibilityAccess()
+                    model.grantRequiredAccess()
                 } label: {
                     
-                    Text("Grant Accessibility Access")
+                    Text("Grant Required Access")
+                }
+                .buttonStyle(BorderedProminentButtonStyle())
+            }
+        }
+    }
+
+    var inputMonitoringBanner: some View {
+        Group {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Input Monitoring Required")
+                    .font(.title2)
+                Text("macOS groups low-level HID report access under Input Monitoring. Touch Up uses it only for USB touch/digitizer reports and does not install a keyboard event tap.")
+            }
+
+            HStack {
+                Spacer()
+                Button {
+                    model.grantHIDListenEventAccess()
+                } label: {
+                    Text("Grant Input Monitoring Access")
                 }
                 .buttonStyle(BorderedProminentButtonStyle())
             }
@@ -167,6 +187,16 @@ struct SettingsView: View {
                     }
 
                 }
+
+                if !model.needsAccessibilityAccessPrompt && model.needsHIDListenEventAccessPrompt {
+                    Section {
+                        inputMonitoringBanner
+                    } footer: {
+                        Rectangle()
+                            .frame(width:0, height:0)
+                            .foregroundColor(.clear)
+                    }
+                }
                 
                 Section {
                     top
@@ -195,6 +225,18 @@ struct SettingsView: View {
 
         } else {
             return List {
+                if model.needsAccessibilityAccessPrompt {
+                    LegacySection {
+                        welcomeBanner
+                    }
+                }
+
+                if !model.needsAccessibilityAccessPrompt && model.needsHIDListenEventAccessPrompt {
+                    LegacySection {
+                        inputMonitoringBanner
+                    }
+                }
+
                 LegacySection {
                     top
                 }
@@ -226,6 +268,7 @@ struct SettingsView: View {
         .frame(minWidth: 400, maxWidth: .infinity, minHeight: 350,  maxHeight: .infinity)
         .onAppear {
             model.checkAccessibilityAccessGranted()
+            model.checkHIDListenEventAccessGranted()
         }
         
     }

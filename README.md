@@ -21,8 +21,13 @@ While the behavior of the driver is customizable, the default setting was inspir
 ### Installing the App
 - Compile the app or [download the latest notarized build here](https://github.com/shueber/Touch-Up/releases).
 - If you wish, move the app into your Applications folder and add it as a Login item.
-- Launch it and allow Accessibility access.
+- Launch it and allow the requested Accessibility and Input Monitoring access.
 - Plug in your touchscreen and start touching.
+
+### Privacy and Permissions
+Touch Up needs Accessibility access to post mouse events to macOS.
+
+On recent macOS versions, reading low-level USB HID touch reports also requires the system permission named Input Monitoring. Touch Up requests this permission through `IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)` and uses it only for USB HID devices whose descriptors look like touchscreens, digitizers, or absolute touch pointers. Touch Up does not install a keyboard event tap, does not match keyboard devices, and does not process keyboard input.
 
 
 ### Compatibility

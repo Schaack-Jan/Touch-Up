@@ -12,6 +12,7 @@
 #import <IOKit/IOKitLib.h>
 #import <IOKit/hid/IOHIDLib.h>
 #import <IOKit/hid/IOHIDElement.h>
+#import <IOKit/hidsystem/IOHIDLib.h>
 
 @class TUCTouchInputManager;
 
@@ -35,6 +36,42 @@
 @implementation TUCInputSourceState
 @end
 
+@interface TUCUSBHIDTouchContact : NSObject
+
+@property NSInteger fallbackContactID;
+@property NSInteger contactID;
+@property BOOL contactIDWasReported;
+@property BOOL isDigitizerContact;
+@property BOOL enabled;
+
+@property BOOL supportsX;
+@property BOOL supportsY;
+@property BOOL supportsSurfaceState;
+@property BOOL supportsContactID;
+
+@property BOOL hasCurrentX;
+@property BOOL hasCurrentY;
+@property CGFloat x;
+@property CGFloat y;
+@property BOOL isOnSurface;
+@property BOOL isValid;
+@property BOOL wasDispatchedOnSurface;
+
+@end
+
+@implementation TUCUSBHIDTouchContact
+
+- (instancetype)init {
+    if (self = [super init]) {
+        _fallbackContactID = NSNotFound;
+        _contactID = NSNotFound;
+        _isValid = YES;
+    }
+    return self;
+}
+
+@end
+
 @interface TUCUSBHIDTouchDevice : NSObject
 
 @property (weak, nullable) TUCTouchInputManager *manager;
@@ -47,15 +84,24 @@
 
 @property (assign, nonatomic) IOHIDDeviceRef hidDeviceRef;
 @property (strong) NSMutableData *hidReportBuffer;
-@property CGFloat hidCurrentX;
-@property CGFloat hidCurrentY;
-@property BOOL hidCurrentButton;
+@property BOOL hidDispatchPending;
+@property BOOL requiresTCCAuthorization;
+@property (strong) NSMutableDictionary<NSValue *, TUCUSBHIDTouchContact *> *hidContactsByCollection;
+@property (strong) NSMutableArray<TUCUSBHIDTouchContact *> *hidContacts;
 
 - (void)close;
 
 @end
 
 @implementation TUCUSBHIDTouchDevice
+
+- (instancetype)init {
+    if (self = [super init]) {
+        _hidContactsByCollection = [NSMutableDictionary dictionary];
+        _hidContacts = [NSMutableArray array];
+    }
+    return self;
+}
 
 - (void)close {
     if (_hidDeviceRef) {
@@ -83,6 +129,13 @@
 @property (strong) NSMutableDictionary<NSNumber *, TUCInputSourceState *> *inputSourceStatesByIdentifier;
 @property NSInteger nextTouchDeviceIdentifier;
 
+- (BOOL)configureTouchDevice:(TUCUSBHIDTouchDevice *)touchDevice
+             fromIOHIDDevice:(IOHIDDeviceRef)device
+     requiresAbsolutePointer:(BOOL)requiresAbsolutePointer;
+- (TUCUSBHIDTouchContact *)contactForHIDElement:(IOHIDElementRef)element
+                                    touchDevice:(TUCUSBHIDTouchDevice *)touchDevice
+                                         create:(BOOL)create;
+- (void)scheduleProcessHIDValuesForTouchDevice:(TUCUSBHIDTouchDevice *)touchDevice;
 - (void)processHIDValuesForTouchDevice:(TUCUSBHIDTouchDevice *)touchDevice;
 - (void)removeHIDDeviceForService:(io_service_t)hidService;
 - (TUCScreen *)screenForTouchDevice:(TUCUSBHIDTouchDevice *)touchDevice;
@@ -95,7 +148,183 @@
 
 @implementation TUCTouchInputManager
 
+static const uint32_t TUC_HID_USAGE_DIG_FINGER = 0x22;
+static const uint32_t TUC_HID_USAGE_DIG_TOUCHSCREEN = 0x04;
+
+static BOOL TUCIsTouchSurfaceUsage(uint32_t page, uint32_t usage) {
+    return (page == kHIDPage_Button && usage == 1) ||
+           (page == kHIDPage_Digitizer && usage == kHIDUsage_Dig_TipSwitch) ||
+           (page == kHIDPage_Digitizer && usage == kHIDUsage_Dig_TouchValid);
+}
+
+static BOOL TUCIsTouchValueUsage(uint32_t page, uint32_t usage) {
+    return (page == kHIDPage_GenericDesktop && (usage == kHIDUsage_GD_X || usage == kHIDUsage_GD_Y)) ||
+           (page == kHIDPage_Digitizer && (usage == kHIDUsage_Dig_ContactIdentifier ||
+                                           usage == kHIDUsage_Dig_TipSwitch ||
+                                           usage == kHIDUsage_Dig_TouchValid)) ||
+           (page == kHIDPage_Button && usage == 1);
+}
+
+static IOHIDAccessType TUCHIDListenEventAccessType(void) {
+    if (@available(macOS 10.15, *)) {
+        return IOHIDCheckAccess(kIOHIDRequestTypeListenEvent);
+    }
+    return kIOHIDAccessTypeGranted;
+}
+
+static NSString *TUCHIDListenEventAccessDescription(IOHIDAccessType accessType) {
+    switch (accessType) {
+        case kIOHIDAccessTypeGranted:
+            return @"granted";
+        case kIOHIDAccessTypeDenied:
+            return @"denied";
+        case kIOHIDAccessTypeUnknown:
+            return @"unknown";
+    }
+}
+
+static BOOL TUCHIDListenEventAccessGranted(void) {
+    return TUCHIDListenEventAccessType() == kIOHIDAccessTypeGranted;
+}
+
+static BOOL TUCListenEventAccessGranted(void) {
+    return TUCHIDListenEventAccessGranted();
+}
+
+static NSString *TUCListenEventAccessDescription(void) {
+    IOHIDAccessType hidAccessType = TUCHIDListenEventAccessType();
+    return [NSString stringWithFormat:@"IOHID=%@", TUCHIDListenEventAccessDescription(hidAccessType)];
+}
+
+static BOOL TUCHIDElementPropertiesContainTouchCollection(NSArray *elements) {
+    for (NSDictionary *element in elements) {
+        NSInteger usagePage = [element[@"UsagePage"] integerValue];
+        NSInteger usage = [element[@"Usage"] integerValue];
+        NSArray *children = element[@"Elements"];
+
+        if (usagePage == kHIDPage_Digitizer &&
+            (usage == TUC_HID_USAGE_DIG_TOUCHSCREEN || usage == TUC_HID_USAGE_DIG_FINGER)) {
+            return YES;
+        }
+
+        if ([children isKindOfClass:[NSArray class]] && TUCHIDElementPropertiesContainTouchCollection(children)) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+static void TUCHIDElementPropertiesFindAbsolutePointerParts(NSArray *elements, BOOL *hasX, BOOL *hasY, BOOL *hasSurface) {
+    for (NSDictionary *element in elements) {
+        NSInteger usagePage = [element[@"UsagePage"] integerValue];
+        NSInteger usage = [element[@"Usage"] integerValue];
+        BOOL isRelative = [element[@"IsRelative"] boolValue];
+        NSInteger min = [element[@"Min"] integerValue];
+        NSInteger max = [element[@"Max"] integerValue];
+        NSArray *children = element[@"Elements"];
+
+        if (usagePage == kHIDPage_GenericDesktop && usage == kHIDUsage_GD_X && !isRelative && max > min) {
+            *hasX = YES;
+        } else if (usagePage == kHIDPage_GenericDesktop && usage == kHIDUsage_GD_Y && !isRelative && max > min) {
+            *hasY = YES;
+        } else if (TUCIsTouchSurfaceUsage((uint32_t)usagePage, (uint32_t)usage)) {
+            *hasSurface = YES;
+        }
+
+        if ([children isKindOfClass:[NSArray class]]) {
+            TUCHIDElementPropertiesFindAbsolutePointerParts(children, hasX, hasY, hasSurface);
+        }
+    }
+}
+
+static BOOL TUCHIDElementPropertiesContainAbsolutePointer(NSArray *elements) {
+    BOOL hasX = NO;
+    BOOL hasY = NO;
+    BOOL hasSurface = NO;
+    TUCHIDElementPropertiesFindAbsolutePointerParts(elements, &hasX, &hasY, &hasSurface);
+    return hasX && hasY && hasSurface;
+}
+
+static BOOL TUCHIDDevicePropertiesLookLikeTouch(NSDictionary *properties, NSInteger usagePage, NSInteger usage) {
+    // Privacy boundary: only devices with touch/digitizer descriptors, touch-like
+    // names, or absolute pointer reports are opened. Keyboards and relative mice
+    // are intentionally ignored even though macOS groups the permission under
+    // "Input Monitoring".
+    if (usagePage == kHIDPage_Digitizer) return YES;
+
+    NSArray *elements = properties[@"Elements"];
+    if ([elements isKindOfClass:[NSArray class]] && TUCHIDElementPropertiesContainTouchCollection(elements)) {
+        return YES;
+    }
+
+    NSString *name = [[NSString stringWithFormat:@"%@ %@ %@ %@",
+                       properties[@"Manufacturer"] ?: @"",
+                       properties[@"ManufacturerString"] ?: @"",
+                       properties[@"Product"] ?: @"",
+                       properties[@"ProductString"] ?: @""] lowercaseString];
+    BOOL nameLooksTouch = ([name containsString:@"touch"] || [name containsString:@"digitizer"]);
+    if (nameLooksTouch) return YES;
+
+    BOOL isGenericPointer = usagePage == kHIDPage_GenericDesktop &&
+        (usage == kHIDUsage_GD_Pointer || usage == kHIDUsage_GD_Mouse);
+    return isGenericPointer &&
+        [elements isKindOfClass:[NSArray class]] &&
+        TUCHIDElementPropertiesContainAbsolutePointer(elements);
+}
+
+static IOHIDElementRef TUCContactCollectionForElement(IOHIDElementRef element, BOOL *isDigitizerContact) {
+    IOHIDElementRef current = IOHIDElementGetParent(element);
+    IOHIDElementRef fallback = NULL;
+    BOOL fallbackIsDigitizer = NO;
+
+    while (current != NULL) {
+        if (IOHIDElementGetType(current) == kIOHIDElementTypeCollection) {
+            uint32_t page = (uint32_t)IOHIDElementGetUsagePage(current);
+            uint32_t usage = (uint32_t)IOHIDElementGetUsage(current);
+
+            if (page == kHIDPage_Digitizer) {
+                fallback = current;
+                fallbackIsDigitizer = YES;
+                if (usage == TUC_HID_USAGE_DIG_FINGER || usage == TUC_HID_USAGE_DIG_TOUCHSCREEN) {
+                    if (isDigitizerContact) *isDigitizerContact = YES;
+                    return current;
+                }
+            } else if (!fallback && page == kHIDPage_GenericDesktop &&
+                       (usage == kHIDUsage_GD_Pointer || usage == kHIDUsage_GD_Mouse)) {
+                fallback = current;
+                fallbackIsDigitizer = NO;
+            }
+        }
+        current = IOHIDElementGetParent(current);
+    }
+
+    if (isDigitizerContact) *isDigitizerContact = fallbackIsDigitizer;
+    return fallback;
+}
+
 #pragma mark   Start & Stop
+
+- (BOOL)isHIDListenEventAccessGranted {
+    return [self checkHIDListenEventAccessGranted];
+}
+
+- (BOOL)checkHIDListenEventAccessGranted {
+    return TUCListenEventAccessGranted();
+}
+
+- (BOOL)requestHIDListenEventAccess {
+    if (@available(macOS 10.15, *)) {
+        // macOS uses the broad "Input Monitoring" TCC category for IOHID report
+        // access. Touch Up does not install a keyboard event tap; the permission
+        // is used only after the device descriptor has been filtered for touch
+        // or digitizer input.
+        BOOL hidGranted = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent);
+        BOOL granted = hidGranted || TUCListenEventAccessGranted();
+        NSLog(@"[TouchUp] HID: requested Input Monitoring access (%@)", TUCListenEventAccessDescription());
+        return granted;
+    }
+    return YES;
+}
 
 - (void)start {
     [self startUSBHIDListening];
@@ -109,7 +338,8 @@
 #pragma mark - HID Device Listening
 
 // Value callback fires once per element that changed within a report.
-// We track the latest X, Y, and button state; processHIDValues assembles them.
+// We keep per-contact state because some controllers hide real touch data inside
+// vendor-defined top-level devices with nested digitizer collections.
 static void hidValueCallback(void *ctx, IOReturn result, void *sender, IOHIDValueRef value) {
     if (result != kIOReturnSuccess) return;
     TUCUSBHIDTouchDevice *touchDevice = (__bridge TUCUSBHIDTouchDevice *)ctx;
@@ -121,21 +351,33 @@ static void hidValueCallback(void *ctx, IOReturn result, void *sender, IOHIDValu
     CFIndex  lMax = IOHIDElementGetLogicalMax(elem);
     if (lMax <= lMin) return;
 
-    if (up == 0x01 && u == 0x30) {         // Generic Desktop X
-        touchDevice.hidCurrentX = (CGFloat)(val - lMin) / (CGFloat)(lMax - lMin);
-    } else if (up == 0x01 && u == 0x31) {  // Generic Desktop Y
-        touchDevice.hidCurrentY = (CGFloat)(val - lMin) / (CGFloat)(lMax - lMin);
-    } else if ((up == 0x09 && u == 0x01) || (up == 0x0D && u == 0x42)) {
-        touchDevice.hidCurrentButton = (val != 0);  // Button 1 or Tip Switch
+    if (!TUCIsTouchValueUsage(up, u)) return;
+
+    TUCUSBHIDTouchContact *contact = [touchDevice.manager contactForHIDElement:elem touchDevice:touchDevice create:NO];
+    if (!contact || !contact.enabled) return;
+
+    if (up == kHIDPage_GenericDesktop && u == kHIDUsage_GD_X) {
+        contact.x = (CGFloat)(val - lMin) / (CGFloat)(lMax - lMin);
+        contact.hasCurrentX = YES;
+    } else if (up == kHIDPage_GenericDesktop && u == kHIDUsage_GD_Y) {
+        contact.y = (CGFloat)(val - lMin) / (CGFloat)(lMax - lMin);
+        contact.hasCurrentY = YES;
+    } else if (up == kHIDPage_Digitizer && u == kHIDUsage_Dig_ContactIdentifier) {
+        contact.contactID = val;
+        contact.contactIDWasReported = YES;
+    } else if (TUCIsTouchSurfaceUsage(up, u)) {
+        contact.isOnSurface = (val != 0);
+        contact.isValid = contact.isOnSurface;
     }
+
+    [touchDevice.manager scheduleProcessHIDValuesForTouchDevice:touchDevice];
 }
 
 // Report callback fires once per complete HID report, after all value callbacks for that report.
 static void hidReportCallback(void *ctx, IOReturn result, void *sender, IOHIDReportType type,
                               uint32_t reportID, uint8_t *report, CFIndex len) {
     if (result != kIOReturnSuccess || len <= 0) return;
-    TUCUSBHIDTouchDevice *touchDevice = (__bridge TUCUSBHIDTouchDevice *)ctx;
-    [touchDevice.manager processHIDValuesForTouchDevice:touchDevice];
+    // Value callbacks carry element identity; they schedule coalesced processing.
 }
 
 static void usbAppearedCallback(void *refcon, io_iterator_t iterator) {
@@ -207,21 +449,23 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
 
     BOOL isDigitizer = (usagePage == 0x0D);
     BOOL isPointer   = (usagePage == 0x01 && (usage == 1 || usage == 2));
-    if (!isDigitizer && !isPointer) {
-        NSLog(@"[TouchUp] HID: not a touch device — skipping");
+    BOOL looksLikeTouch = TUCHIDDevicePropertiesLookLikeTouch(props, usagePage, usage);
+    if (!looksLikeTouch) {
         return;
     }
 
     [self openIOHIDDevice:hidDevice properties:props requiresAbsolutePointer:isPointer && !isDigitizer];
 }
 
-- (BOOL)hidDeviceHasUsableTouchElements:(IOHIDDeviceRef)device requiresTouchButton:(BOOL)requiresTouchButton {
+- (BOOL)configureTouchDevice:(TUCUSBHIDTouchDevice *)touchDevice
+             fromIOHIDDevice:(IOHIDDeviceRef)device
+     requiresAbsolutePointer:(BOOL)requiresTouchButton {
     CFArrayRef elements = IOHIDDeviceCopyMatchingElements(device, NULL, kIOHIDOptionsTypeNone);
     if (!elements) return NO;
 
-    BOOL hasAbsoluteX = NO;
-    BOOL hasAbsoluteY = NO;
-    BOOL hasTouchButton = NO;
+    [touchDevice.hidContactsByCollection removeAllObjects];
+    [touchDevice.hidContacts removeAllObjects];
+    NSInteger fallbackContactID = 0;
 
     for (CFIndex i = 0; i < CFArrayGetCount(elements); i++) {
         IOHIDElementRef element = (IOHIDElementRef)CFArrayGetValueAtIndex(elements, i);
@@ -231,17 +475,75 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
         CFIndex lMax = IOHIDElementGetLogicalMax(element);
         BOOL hasRange = lMax > lMin;
 
+        if (!TUCIsTouchValueUsage(page, usage)) continue;
+
+        TUCUSBHIDTouchContact *contact = [self contactForHIDElement:element touchDevice:touchDevice create:YES];
+        if (!contact) continue;
+
+        if (contact.fallbackContactID == NSNotFound) {
+            contact.fallbackContactID = fallbackContactID++;
+        }
+
         if (page == 0x01 && usage == 0x30 && hasRange && !IOHIDElementIsRelative(element)) {
-            hasAbsoluteX = YES;
+            contact.supportsX = YES;
         } else if (page == 0x01 && usage == 0x31 && hasRange && !IOHIDElementIsRelative(element)) {
-            hasAbsoluteY = YES;
-        } else if ((page == 0x09 && usage == 0x01) || (page == 0x0D && usage == 0x42)) {
-            hasTouchButton = YES;
+            contact.supportsY = YES;
+        } else if (TUCIsTouchSurfaceUsage(page, usage)) {
+            contact.supportsSurfaceState = YES;
+        } else if (page == kHIDPage_Digitizer && usage == kHIDUsage_Dig_ContactIdentifier) {
+            contact.supportsContactID = YES;
         }
     }
 
     CFRelease(elements);
-    return hasAbsoluteX && hasAbsoluteY && (!requiresTouchButton || hasTouchButton);
+
+    BOOL hasDigitizerContact = NO;
+    for (TUCUSBHIDTouchContact *contact in touchDevice.hidContacts) {
+        if (contact.isDigitizerContact && contact.supportsX && contact.supportsY && contact.supportsSurfaceState) {
+            hasDigitizerContact = YES;
+            break;
+        }
+    }
+
+    NSMutableArray<TUCUSBHIDTouchContact *> *enabledContacts = [NSMutableArray array];
+    for (TUCUSBHIDTouchContact *contact in touchDevice.hidContacts) {
+        BOOL usablePosition = contact.supportsX && contact.supportsY;
+        BOOL usableSurface = contact.supportsSurfaceState || (contact.isDigitizerContact && !requiresTouchButton);
+        contact.enabled = usablePosition && usableSurface && (hasDigitizerContact ? contact.isDigitizerContact : YES);
+
+        if (contact.enabled) {
+            [enabledContacts addObject:contact];
+        }
+    }
+
+    NSLog(@"[TouchUp] HID: descriptor profile contacts=%ld enabled=%ld digitizer=%@ requiresTouchButton=%@",
+          (long)touchDevice.hidContacts.count,
+          (long)enabledContacts.count,
+          hasDigitizerContact ? @"yes" : @"no",
+          requiresTouchButton ? @"yes" : @"no");
+
+    return enabledContacts.count > 0;
+}
+
+- (TUCUSBHIDTouchContact *)contactForHIDElement:(IOHIDElementRef)element
+                                    touchDevice:(TUCUSBHIDTouchDevice *)touchDevice
+                                         create:(BOOL)create {
+    BOOL isDigitizerContact = NO;
+    IOHIDElementRef collection = TUCContactCollectionForElement(element, &isDigitizerContact);
+    if (!collection) return nil;
+
+    NSValue *key = [NSValue valueWithPointer:collection];
+    TUCUSBHIDTouchContact *contact = touchDevice.hidContactsByCollection[key];
+    if (!contact && create) {
+        contact = [TUCUSBHIDTouchContact new];
+        contact.isDigitizerContact = isDigitizerContact;
+        touchDevice.hidContactsByCollection[key] = contact;
+        [touchDevice.hidContacts addObject:contact];
+    } else if (contact && isDigitizerContact) {
+        contact.isDigitizerContact = YES;
+    }
+
+    return contact;
 }
 
 - (uint64_t)registryIDForService:(io_service_t)hidService {
@@ -259,9 +561,9 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
     return product ?: manufacturer ?: @"USB HID Touch";
 }
 
-// Open the IOHIDDevice for shared (non-exclusive) input report access.
-// For digitizer devices (usage page 0x0D), this does not trigger the Input Monitoring TCC prompt.
-// Element value callbacks update X/Y/button state; report callback fires once per complete report.
+// Open the IOHIDDevice for shared (non-exclusive) access.
+// Element value callbacks update per-contact touch state; report callbacks are kept
+// registered only so controllers that expect a report buffer still behave normally.
 - (void)openIOHIDDevice:(io_service_t)hidService properties:(NSDictionary *)properties requiresAbsolutePointer:(BOOL)requiresAbsolutePointer {
     uint64_t registryID = [self registryIDForService:hidService];
     NSNumber *registryKey = @(registryID);
@@ -273,19 +575,6 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
         return;
     }
 
-    if (![self hidDeviceHasUsableTouchElements:device requiresTouchButton:requiresAbsolutePointer]) {
-        NSLog(@"[TouchUp] HID: no usable absolute touch axes — skipping");
-        CFRelease(device);
-        return;
-    }
-
-    IOReturn ret = IOHIDDeviceOpen(device, kIOHIDOptionsTypeNone);
-    if (ret != kIOReturnSuccess) {
-        NSLog(@"[TouchUp] HID: IOHIDDeviceOpen failed: 0x%08x", ret);
-        CFRelease(device);
-        return;
-    }
-
     TUCUSBHIDTouchDevice *touchDevice = [TUCUSBHIDTouchDevice new];
     touchDevice.manager = self;
     touchDevice.sourceIdentifier = self.nextTouchDeviceIdentifier++;
@@ -293,7 +582,32 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
     touchDevice.vendorID = [properties[@"VendorID"] integerValue];
     touchDevice.productID = [properties[@"ProductID"] integerValue];
     touchDevice.name = [self displayNameForHIDProperties:properties];
+    touchDevice.requiresTCCAuthorization = [properties[@"RequiresTCCAuthorization"] boolValue];
+
+    if (!TUCListenEventAccessGranted()) {
+        NSLog(@"[TouchUp] HID: Input Monitoring access %@ — attempting open so macOS can register '%@' (RequiresTCCAuthorization=%@)",
+              TUCListenEventAccessDescription(),
+              touchDevice.name,
+              touchDevice.requiresTCCAuthorization ? @"yes" : @"no");
+    }
+
+    IOReturn ret = IOHIDDeviceOpen(device, kIOHIDOptionsTypeNone);
+    if (ret != kIOReturnSuccess) {
+        NSLog(@"[TouchUp] HID: IOHIDDeviceOpen failed: 0x%08x for '%@' (InputMonitoring=%@ RequiresTCCAuthorization=%@)",
+              ret,
+              touchDevice.name,
+              TUCListenEventAccessDescription(),
+              touchDevice.requiresTCCAuthorization ? @"yes" : @"no");
+        CFRelease(device);
+        return;
+    }
     touchDevice.hidDeviceRef = device; // owned — caller of IOHIDDeviceCreate holds the only reference
+
+    if (![self configureTouchDevice:touchDevice fromIOHIDDevice:device requiresAbsolutePointer:requiresAbsolutePointer]) {
+        NSLog(@"[TouchUp] HID: no usable touch descriptor profile — skipping '%@'", touchDevice.name);
+        [touchDevice close];
+        return;
+    }
 
     [self screenForTouchDevice:touchDevice];
     [self inputSourceStateForIdentifier:touchDevice.sourceIdentifier];
@@ -312,7 +626,7 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
     if (_hidTouchDevicesByRegistryID.count == 1) {
         TouchInputManagerDidConnectTouchscreen((__bridge void *)self);
     }
-    NSLog(@"[TouchUp] HID: device opened, source=%ld name='%@' VendorID=%ld ProductID=%ld listening for reports",
+    NSLog(@"[TouchUp] HID: device opened, source=%ld name='%@' VendorID=%ld ProductID=%ld listening for values",
           (long)touchDevice.sourceIdentifier,
           touchDevice.name,
           (long)touchDevice.vendorID,
@@ -347,16 +661,44 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
     }
 }
 
+- (void)scheduleProcessHIDValuesForTouchDevice:(TUCUSBHIDTouchDevice *)touchDevice {
+    if (touchDevice.hidDispatchPending) return;
+    touchDevice.hidDispatchPending = YES;
+
+    __weak TUCTouchInputManager *weakSelf = self;
+    __weak TUCUSBHIDTouchDevice *weakTouchDevice = touchDevice;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        TUCTouchInputManager *strongSelf = weakSelf;
+        TUCUSBHIDTouchDevice *strongTouchDevice = weakTouchDevice;
+        if (!strongSelf || !strongTouchDevice || !strongTouchDevice.hidDeviceRef) return;
+
+        strongTouchDevice.hidDispatchPending = NO;
+        [strongSelf processHIDValuesForTouchDevice:strongTouchDevice];
+    });
+}
+
 - (void)processHIDValuesForTouchDevice:(TUCUSBHIDTouchDevice *)touchDevice {
-    CGFloat x = MAX(0.0, MIN(1.0, touchDevice.hidCurrentX));
-    CGFloat y = MAX(0.0, MIN(1.0, touchDevice.hidCurrentY));
     TUCScreen *screen = [self screenForTouchDevice:touchDevice];
-    [self updateTouch:0
-         withLocation:CGPointMake(x, y)
-            onSurface:(Boolean)touchDevice.hidCurrentButton
-    tooLargeForFinger:1
-               screen:screen
-     sourceIdentifier:touchDevice.sourceIdentifier];
+    for (TUCUSBHIDTouchContact *contact in touchDevice.hidContacts) {
+        if (!contact.enabled || !contact.hasCurrentX || !contact.hasCurrentY) continue;
+
+        BOOL onSurface = contact.supportsSurfaceState ? contact.isOnSurface : YES;
+        if (!onSurface && !contact.wasDispatchedOnSurface) continue;
+
+        NSInteger contactID = contact.contactIDWasReported ? contact.contactID : contact.fallbackContactID;
+        CGFloat x = MAX(0.0, MIN(1.0, contact.x));
+        CGFloat y = MAX(0.0, MIN(1.0, contact.y));
+
+        [self updateTouch:contactID
+             withLocation:CGPointMake(x, y)
+                onSurface:(Boolean)onSurface
+        tooLargeForFinger:(Boolean)contact.isValid
+                   screen:screen
+         sourceIdentifier:touchDevice.sourceIdentifier];
+
+        contact.wasDispatchedOnSurface = onSurface;
+    }
+
     [self didProcessReportForSourceIdentifier:touchDevice.sourceIdentifier];
 }
 

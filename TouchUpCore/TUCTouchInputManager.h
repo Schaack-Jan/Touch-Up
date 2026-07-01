@@ -49,6 +49,14 @@ NS_ASSUME_NONNULL_BEGIN
 @property BOOL ignoreOriginTouches;
 
 
+@property (nonatomic, readonly) BOOL isHIDListenEventAccessGranted;
+
+
+- (BOOL)checkHIDListenEventAccessGranted;
+
+- (BOOL)requestHIDListenEventAccess;
+
+
 - (void)start;
 
 - (void)stop;

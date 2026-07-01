@@ -50,9 +50,18 @@ class TouchUp: NSObject, ObservableObject {
     
     
     @Published var isAccessibilityAccessGranted = false
+    @Published var isHIDListenEventAccessGranted = false
 
     var needsAccessibilityAccessPrompt: Bool {
         isPublishingMouseEventsEnabled && !isAccessibilityAccessGranted
+    }
+
+    var needsHIDListenEventAccessPrompt: Bool {
+        !isHIDListenEventAccessGranted
+    }
+
+    var needsPermissionsPrompt: Bool {
+        needsAccessibilityAccessPrompt || needsHIDListenEventAccessPrompt
     }
     
     // MARK: - Attempt to automatically determine touch screen
@@ -177,7 +186,70 @@ class TouchUp: NSObject, ObservableObject {
     }
 
     func grantAccessibilityAccess() {
-        if checkAccessibilityAccessGranted(prompt: true) {
+        grantRequiredAccess()
+    }
+
+    func grantRequiredAccess() {
+        checkAccessibilityAccessGranted(prompt: true)
+        requestHIDListenEventAccess(openSettingsIfDenied: false)
+        closeSettingsIfPermissionsAreGranted()
+    }
+
+    @discardableResult
+    func checkHIDListenEventAccessGranted(restartIfNewlyGranted: Bool = false) -> Bool {
+        let wasGranted = isHIDListenEventAccessGranted
+        let isGranted = touchManager.checkHIDListenEventAccessGranted()
+        isHIDListenEventAccessGranted = isGranted
+
+        if restartIfNewlyGranted && isGranted && !wasGranted {
+            touchManager.stop()
+            touchManager.start()
+        }
+
+        return isGranted
+    }
+
+    func grantHIDListenEventAccess() {
+        requestHIDListenEventAccess(openSettingsIfDenied: true)
+    }
+
+    private func requestHIDListenEventAccess(openSettingsIfDenied: Bool) {
+        let wasGranted = isHIDListenEventAccessGranted
+        let requestGranted = touchManager.requestHIDListenEventAccess()
+        let isGranted = requestGranted || touchManager.checkHIDListenEventAccessGranted()
+        isHIDListenEventAccessGranted = isGranted
+
+        if isGranted {
+            if !wasGranted {
+                touchManager.stop()
+                touchManager.start()
+            }
+            closeSettingsIfPermissionsAreGranted()
+        } else {
+            touchManager.stop()
+            touchManager.start()
+            if openSettingsIfDenied {
+                openInputMonitoringPrivacySettings()
+            }
+        }
+    }
+
+    func openInputMonitoringPrivacySettings() {
+        let candidates = [
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent",
+            "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?listenEvent",
+            "x-apple.systempreferences:com.apple.preference.security?Privacy"
+        ]
+
+        for urlString in candidates {
+            if let url = URL(string: urlString), NSWorkspace.shared.open(url) {
+                return
+            }
+        }
+    }
+
+    private func closeSettingsIfPermissionsAreGranted() {
+        if !needsPermissionsPrompt {
             (NSApp.delegate as? AppDelegate)?.settingsWindow.close()
         }
     }
@@ -196,6 +268,7 @@ class TouchUp: NSObject, ObservableObject {
         initPreferences()
         
         checkAccessibilityAccessGranted()
+        checkHIDListenEventAccessGranted()
     }
     
     

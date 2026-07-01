@@ -66,7 +66,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         self.model.touchManager.start()
         
         
-        if model.needsAccessibilityAccessPrompt {
+        if model.needsPermissionsPrompt {
             self.showPreferences(nil)
         }
         
@@ -83,6 +83,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidBecomeActive(_ notification: Notification) {
         self.model.checkAccessibilityAccessGranted()
+        self.model.checkHIDListenEventAccessGranted(restartIfNewlyGranted: true)
     }
 
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
@@ -92,6 +93,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     @IBAction func showPreferences(_ sender: Any?) {
         self.model.checkAccessibilityAccessGranted()
+        self.model.checkHIDListenEventAccessGranted(restartIfNewlyGranted: true)
         self.settingsWindow.makeVisible()
     }
     
