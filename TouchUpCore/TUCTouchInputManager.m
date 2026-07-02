@@ -745,6 +745,7 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
 
 - (void)stopCurrentGestureForSourceState:(TUCInputSourceState *)sourceState {
     [[TUCCursorUtilities sharedInstance] stopDraggingCursor];
+    [[TUCCursorUtilities sharedInstance] stopSecondaryDraggingCursor];
     [[TUCCursorUtilities sharedInstance] stopMagnifying];
 
     sourceState.identifiedMultitouchGesture = _TUCCursorGestureNone;
@@ -872,12 +873,16 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
         if (sourceState.cursorTouchStationarySinceDate != nil) {
             holdDuration = [[NSDate date] timeIntervalSinceDate:sourceState.cursorTouchStationarySinceDate];
         }
-        if (sourceState.cursorTouchQualifiedForTap && holdDuration > self.holdDuration) {
+        if (!sourceState.cursorTouchDidHold && sourceState.cursorTouchQualifiedForTap && holdDuration > self.holdDuration) {
             // the user left the finger on the screen for the min duration required to produce a hold
             sourceState.cursorTouchDidHold = YES;
+            sourceState.cursorTouchQualifiedForTap = NO;
+            [self performMouseEventForGesture:TUCCursorGestureLongPress sourceState:sourceState];
         }
         
-        [self checkForSecondaryClickForSourceState:sourceState];
+        if (!sourceState.cursorTouchDidHold) {
+            [self checkForSecondaryClickForSourceState:sourceState];
+        }
         
         return;
     }
@@ -913,7 +918,7 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
         return;
     }
     
-    if ([self checkForSecondaryClickForSourceState:sourceState]) {
+    if (!sourceState.cursorTouchDidHold && [self checkForSecondaryClickForSourceState:sourceState]) {
         return;
     }
     
@@ -939,9 +944,9 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
                     if (!CGPointEqualToPoint(trajectoryA, trajectoryB)) {
                         sourceState.identifiedMultitouchGesture = TUCCursorGesturePinch;
                     }
-//                    else {
-//                        sourceState.identifiedMultitouchGesture = TUCCursorGestureTwoFingerDrag;
-//                    }
+                    else {
+                        sourceState.identifiedMultitouchGesture = TUCCursorGestureTwoFingerDrag;
+                    }
                 }
                 
             } else {
@@ -1063,6 +1068,10 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
             [utils performSecondaryClickAt: screenLocation];
             break;
             
+        case TUCCursorActionSecondaryDrag:
+            [utils secondaryDragCursorTo:screenLocation phase:touch.phase];
+            break;
+
         case TUCCursorActionScroll: {
             CGPoint prevLocation = [self convertScreenPointRelativeToAbsolute:touch.previousLocation onScreen:ts];
             CGPoint translation = CGPointMake(screenLocation.x - prevLocation.x,
@@ -1093,11 +1102,11 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
     switch(gesture) {
         case TUCCursorGestureTouchDown:         return TUCCursorActionMoveClickIfNeeded;
         case TUCCursorGestureTap:               return TUCCursorActionClick;
-        case TUCCursorGestureLongPress:         return TUCCursorActionClick;
-        case TUCCursorGestureDrag:              return TUCCursorActionScroll;
-        case TUCCursorGestureHoldAndDrag:       return TUCCursorActionDrag;
+        case TUCCursorGestureLongPress:         return TUCCursorActionSecondaryDrag;
+        case TUCCursorGestureDrag:              return TUCCursorActionMove;
+        case TUCCursorGestureHoldAndDrag:       return TUCCursorActionSecondaryDrag;
         case TUCCursorGestureTapSecondFinger:   return TUCCursorActionSecondaryClick;
-        case TUCCursorGestureTwoFingerDrag:     return TUCCursorActionDrag;
+        case TUCCursorGestureTwoFingerDrag:     return TUCCursorActionScroll;
             
         case TUCCursorGesturePinch:             return TUCCursorActionMagnify;
         case _TUCCursorGestureNone:             return TUCCursorActionNone;

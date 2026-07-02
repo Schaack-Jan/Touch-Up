@@ -12,6 +12,7 @@ import TouchUpCore
 class TouchUp: NSObject, ObservableObject {
     
     let touchManager: TUCTouchInputManager
+    private let gestureDefaultsVersion = 1
     @Published var touches = [TUCTouch]()
     
     
@@ -291,12 +292,17 @@ extension TouchUp {
             "errorResistance" : 4,
             "ignoreOriginTouches" : true,
             
-            "isScrollingWithOneFingerEnabled" : true,
+            "isScrollingWithOneFingerEnabled" : false,
             "isSecondaryClickEnabled" : true,
             "isMagnificationEnabled" : true,
             "isClickWindowToFrontEnabled" : false,
             "isClickOnLiftEnabled" : false
         ])
+
+        if defaults.integer(forKey: "gestureDefaultsVersion") < gestureDefaultsVersion {
+            defaults.set(false, forKey: "isScrollingWithOneFingerEnabled")
+            defaults.set(gestureDefaultsVersion, forKey: "gestureDefaultsVersion")
+        }
         
         holdDuration = defaults.double(forKey: "holdDuration")
         doubleClickDistance = defaults.double(forKey: "doubleClickDistance")
@@ -362,19 +368,19 @@ extension TouchUp: TUCTouchDelegate {
             return .click
             
         case .TUCCursorGestureLongPress:
-            return .click
+            return .secondaryDrag
             
         case .TUCCursorGestureDrag:
             return isClickOnLiftEnabled ? .pointAndClick : (isScrollingWithOneFingerEnabled ? .scroll : .move)
             
         case .TUCCursorGestureHoldAndDrag:
-            return .drag
+            return .secondaryDrag
             
         case .TUCCursorGestureTapSecondFinger:
             return isSecondaryClickEnabled ? .secondaryClick : .none
             
         case .TUCCursorGestureTwoFingerDrag:
-            return isScrollingWithOneFingerEnabled ? .drag : .scroll
+            return .scroll
             
         case .TUCCursorGesturePinch:
             return isMagnificationEnabled ? .magnify : .none
@@ -416,8 +422,8 @@ extension TouchUp {
                    "Specifies which screen should receive the touch events.")
             
         case \.isScrollingWithOneFingerEnabled:
-            return("Scroll with one finger",
-                   "Scroll by dragging one finger over the touchscreen. If this option is disabled, you will move the cursor instead.")
+            return("One Finger Scroll",
+                   "Use one-finger drag for scrolling instead of moving the cursor.")
             
         case \.isSecondaryClickEnabled:
             return("Secondary Click",
@@ -437,7 +443,7 @@ extension TouchUp {
             
         case \.holdDuration:
             return("Hold Duration",
-                   "How long do you have to hold finger to initiate hold&drag")
+                   "How long you have to hold a finger to initiate a right-click.")
             
         case \.doubleClickDistance:
             return("Double Click Zone",

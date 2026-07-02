@@ -14,6 +14,7 @@
 @property CGPoint locationOfLastClick;
 
 @property BOOL isLeftMouseDown;
+@property BOOL isRightMouseDown;
 
 @property CGPoint momentumScrollTranslation;
 @property (strong) NSTimer *momentumScrollTimer;
@@ -32,6 +33,7 @@
         if (!sharedInstance) {
             sharedInstance = [[TUCCursorUtilities alloc] init];
             sharedInstance.isLeftMouseDown = NO;
+            sharedInstance.isRightMouseDown = NO;
             sharedInstance.cursorClickCount = 0;
             sharedInstance.timeOfLastClick = [NSDate dateWithTimeIntervalSince1970:0];
             sharedInstance.locationOfLastClick = CGPointZero;
@@ -56,6 +58,7 @@
 - (void)moveCursorTo:(CGPoint)aLocation {
     [self cancelMomentumScroll];
     [self stopDraggingCursor];
+    [self stopSecondaryDraggingCursor];
     
     CGEventRef event = CGEventCreateMouseEvent(NULL, kCGEventMouseMoved, aLocation, kCGMouseButtonLeft);
     CGEventSetIntegerValueField(event, kCGMouseEventClickState, 0);
@@ -86,6 +89,10 @@
  integrated double click support: needs checks time between clicks and spatial distance
  */
 - (void)performClickAt:(CGPoint)aLocation {
+    [self cancelMomentumScroll];
+    [self stopDraggingCursor];
+    [self stopSecondaryDraggingCursor];
+
     [self updateCursorClickCountWithLocation:aLocation];
     
     CGEventRef event = CGEventCreateMouseEvent(NULL, kCGEventLeftMouseDown, aLocation, kCGMouseButtonLeft);
@@ -118,6 +125,10 @@
 
 
 - (void)performSecondaryClickAt:(CGPoint)aLocation {
+    [self cancelMomentumScroll];
+    [self stopDraggingCursor];
+    [self stopSecondaryDraggingCursor];
+
     CGEventRef event = CGEventCreateMouseEvent(NULL, kCGEventRightMouseDown, aLocation, kCGMouseButtonRight);
     CGEventSetIntegerValueField(event, kCGMouseEventClickState, 1);
     CGEventPost(kCGHIDEventTap, event);
@@ -133,8 +144,10 @@
         [self stopDraggingCursor];
         return;
     }
-    
-    
+
+    [self cancelMomentumScroll];
+    [self stopSecondaryDraggingCursor];
+
     if (self.isLeftMouseDown) {
         CGEventRef event = CGEventCreateMouseEvent(NULL, kCGEventLeftMouseDragged, aLocation, kCGMouseButtonLeft);
         CGEventSetIntegerValueField(event, kCGMouseEventClickState, self.cursorClickCount);
@@ -154,6 +167,37 @@
 }
 
 
+- (void)secondaryDragCursorTo:(CGPoint)aLocation phase:(NSTouchPhase)phase  {
+    if (phase == NSTouchPhaseEnded || phase == NSTouchPhaseCancelled) {
+        [self stopSecondaryDraggingCursor];
+        return;
+    }
+
+    [self cancelMomentumScroll];
+    [self stopDraggingCursor];
+
+    if (self.isRightMouseDown) {
+        CGEventRef event = CGEventCreateMouseEvent(NULL, kCGEventRightMouseDragged, aLocation, kCGMouseButtonRight);
+        CGEventSetIntegerValueField(event, kCGMouseEventClickState, 1);
+        CGEventPost(kCGHIDEventTap, event);
+        CFRelease(event);
+
+    } else {
+        CGEventRef moveEvent = CGEventCreateMouseEvent(NULL, kCGEventMouseMoved, aLocation, kCGMouseButtonRight);
+        CGEventSetIntegerValueField(moveEvent, kCGMouseEventClickState, 0);
+        CGEventPost(kCGHIDEventTap, moveEvent);
+        CFRelease(moveEvent);
+
+        CGEventRef event = CGEventCreateMouseEvent(NULL, kCGEventRightMouseDown, aLocation, kCGMouseButtonRight);
+        CGEventSetIntegerValueField(event, kCGMouseEventClickState, 1);
+        CGEventPost(kCGHIDEventTap, event);
+        CFRelease(event);
+
+        self.isRightMouseDown = YES;
+    }
+}
+
+
 - (void)stopDraggingCursor {
     if (self.isLeftMouseDown) {
         CGEventRef event = CGEventCreateMouseEvent(NULL, kCGEventLeftMouseUp, [self currentCursorLocation], kCGMouseButtonLeft);
@@ -166,9 +210,22 @@
 }
 
 
+- (void)stopSecondaryDraggingCursor {
+    if (self.isRightMouseDown) {
+        CGEventRef event = CGEventCreateMouseEvent(NULL, kCGEventRightMouseUp, [self currentCursorLocation], kCGMouseButtonRight);
+        CGEventSetIntegerValueField(event, kCGMouseEventClickState, 1);
+        CGEventPost(kCGHIDEventTap, event);
+        CFRelease(event);
+
+        self.isRightMouseDown = NO;
+    }
+}
+
+
 
 - (void)scroll:(CGPoint)translation phase:(NSTouchPhase)phase {
     [self stopDraggingCursor];
+    [self stopSecondaryDraggingCursor];
     
     CGEventRef event = CGEventCreateScrollWheelEvent2(NULL, kCGScrollEventUnitPixel, 2, translation.y, translation.x, 0);
     
@@ -210,6 +267,7 @@
 
 - (void)magnify:(CGFloat)magnification phase:(NSTouchPhase)phase {
     [self stopDraggingCursor];
+    [self stopSecondaryDraggingCursor];
     
     if (phase == NSTouchPhaseMoved && magnification == 0) {
         // no reason to post that
@@ -250,6 +308,7 @@
 
 - (void)magnifyLocationA:(CGPoint)p1 locationB:(CGPoint)p2 relativeP1:(CGPoint)r1 relP2:(CGPoint)r2 {
     [self stopDraggingCursor];
+    [self stopSecondaryDraggingCursor];
     
     NSTouchPhase phase = NSTouchPhaseMoved;
     

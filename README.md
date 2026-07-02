@@ -7,12 +7,13 @@ The goal of Touch Up was to provide a simple, general-purpose driver that enable
 The code in this repository provides a user-space driver that reads and processes the HID data into a set of touches and different utilities to inject mouse events into the system.
 
 ## What can you do with this App?
-The Touch Up **utility app** allows you to control your Mac with any connected touch screen. Touch Up supports clicks, dragging, scrolling, and pinch-to-zoom.
-While the behavior of the driver is customizable, the default setting was inspired by iPadOS:
+The Touch Up **utility app** allows you to control your Mac with any connected touch screen. Touch Up supports clicks, cursor movement, scrolling, and pinch-to-zoom.
+While the behavior of the driver is customizable, the default setting follows Windows-like touch gestures:
 
 - Tap anywhere on the screen to click objects
-- Scroll content by flicking over the screen
-- Drag contents by briefly resting your finger before moving it
+- Move the cursor by dragging one finger over the screen
+- Right-click by pressing and holding one finger
+- Scroll content by dragging two fingers
 - Zoom content by pinching two fingers
 - Secondary clicks can be performed with two fingers
 - You can even enable touching a window to move it to the front like Stage Manager on iPadOS does
