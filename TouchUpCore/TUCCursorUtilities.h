@@ -28,10 +28,16 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (void)dragCursorTo:(CGPoint)aLocation phase:(NSTouchPhase)phase;
 - (void)stopDraggingCursor;
-- (void)secondaryDragCursorTo:(CGPoint)aLocation phase:(NSTouchPhase)phase;
-- (void)stopSecondaryDraggingCursor;
+- (void)leftMouseDownAt:(CGPoint)aLocation;
+- (void)leftMouseDraggedTo:(CGPoint)aLocation;
+- (void)leftMouseUp;
+- (void)rightMouseDownAt:(CGPoint)aLocation;
+- (void)rightMouseDraggedTo:(CGPoint)aLocation;
+- (void)rightMouseUp;
+- (void)releaseAllButtons;
 
 - (void)scroll:(CGPoint)translation phase:(NSTouchPhase)phase;
+- (void)cancelMomentumScroll;
 
 - (void)magnifyLocationA:(CGPoint)p1 locationB:(CGPoint)p2 relativeP1:(CGPoint)r1 relP2:(CGPoint)r2;
 - (void)stopMagnifying;

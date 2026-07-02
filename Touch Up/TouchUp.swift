@@ -12,7 +12,7 @@ import TouchUpCore
 class TouchUp: NSObject, ObservableObject {
     
     let touchManager: TUCTouchInputManager
-    private let gestureDefaultsVersion = 1
+    private let gestureDefaultsVersion = 3
     @Published var touches = [TUCTouch]()
     
     
@@ -25,18 +25,16 @@ class TouchUp: NSObject, ObservableObject {
     
     
     
-    @Published var holdDuration: TimeInterval = 0.1
+    @Published var holdDuration: TimeInterval = 0.55
     @Published var doubleClickDistance: CGFloat = 3 //mm
     @Published var errorResistance: NSInteger = 0 // num of Reports to wait before cancelling a touch
     @Published var ignoreOriginTouches: Bool = false
     
     
     
-    @Published var isScrollingWithOneFingerEnabled = false
-    @Published var isSecondaryClickEnabled = false
-    @Published var isMagnificationEnabled = false
-    @Published var isClickWindowToFrontEnabled = false
-    @Published var isClickOnLiftEnabled = false
+    @Published var isWindowTitleBarDragEnabled = true
+    @Published var isSecondaryClickEnabled = true
+    @Published var isTwoFingerScrollEnabled = true
     
     
     
@@ -287,20 +285,24 @@ extension TouchUp {
         let defaults = UserDefaults.standard
         
         defaults.register(defaults: [
-            "holdDuration" : 0.1,
+            "holdDuration" : 0.55,
             "doubleClickDistance" : 8,
             "errorResistance" : 4,
             "ignoreOriginTouches" : true,
             
-            "isScrollingWithOneFingerEnabled" : false,
+            "isWindowTitleBarDragEnabled" : true,
             "isSecondaryClickEnabled" : true,
-            "isMagnificationEnabled" : true,
-            "isClickWindowToFrontEnabled" : false,
-            "isClickOnLiftEnabled" : false
+            "isTwoFingerScrollEnabled" : true,
         ])
 
         if defaults.integer(forKey: "gestureDefaultsVersion") < gestureDefaultsVersion {
+            defaults.set(0.55, forKey: "holdDuration")
             defaults.set(false, forKey: "isScrollingWithOneFingerEnabled")
+            defaults.set(false, forKey: "isClickOnLiftEnabled")
+            defaults.set(true, forKey: "isWindowTitleBarDragEnabled")
+            defaults.set(true, forKey: "isSecondaryClickEnabled")
+            defaults.set(true, forKey: "isTwoFingerScrollEnabled")
+            defaults.set(false, forKey: "isMagnificationEnabled")
             defaults.set(gestureDefaultsVersion, forKey: "gestureDefaultsVersion")
         }
         
@@ -315,16 +317,17 @@ extension TouchUp {
             $holdDuration.assign(to: \.holdDuration, on: touchManager),
             $doubleClickDistance.assign(to: \.doubleClickTolerance, on: touchManager),
             $errorResistance.assign(to: \.errorResistance, on: touchManager),
-            $ignoreOriginTouches.assign(to: \.ignoreOriginTouches, on: touchManager)
+            $ignoreOriginTouches.assign(to: \.ignoreOriginTouches, on: touchManager),
+            $isWindowTitleBarDragEnabled.assign(to: \.windowTitleBarDragEnabled, on: touchManager),
+            $isSecondaryClickEnabled.assign(to: \.twoFingerTapSecondaryClickEnabled, on: touchManager),
+            $isTwoFingerScrollEnabled.assign(to: \.twoFingerScrollEnabled, on: touchManager)
         ]
         
         
         
-        isScrollingWithOneFingerEnabled = defaults.bool(forKey: "isScrollingWithOneFingerEnabled")
+        isWindowTitleBarDragEnabled = defaults.bool(forKey: "isWindowTitleBarDragEnabled")
         isSecondaryClickEnabled = defaults.bool(forKey: "isSecondaryClickEnabled")
-        isMagnificationEnabled = defaults.bool(forKey: "isMagnificationEnabled")
-        isClickWindowToFrontEnabled = defaults.bool(forKey: "isClickWindowToFrontEnabled")
-        isClickOnLiftEnabled = defaults.bool(forKey: "isClickOnLiftEnabled")
+        isTwoFingerScrollEnabled = defaults.bool(forKey: "isTwoFingerScrollEnabled")
     }
     
     
@@ -336,11 +339,9 @@ extension TouchUp {
         defaults.set(errorResistance, forKey: "errorResistance")
         defaults.set(ignoreOriginTouches, forKey: "ignoreOriginTouches")
         
-        defaults.set(isScrollingWithOneFingerEnabled, forKey: "isScrollingWithOneFingerEnabled")
+        defaults.set(isWindowTitleBarDragEnabled, forKey: "isWindowTitleBarDragEnabled")
         defaults.set(isSecondaryClickEnabled, forKey: "isSecondaryClickEnabled")
-        defaults.set(isMagnificationEnabled, forKey: "isMagnificationEnabled")
-        defaults.set(isClickWindowToFrontEnabled, forKey: "isClickWindowToFrontEnabled")
-        defaults.set(isClickOnLiftEnabled, forKey: "isClickOnLiftEnabled")
+        defaults.set(isTwoFingerScrollEnabled, forKey: "isTwoFingerScrollEnabled")
     }
     
 }
@@ -358,40 +359,6 @@ extension TouchUp: TUCTouchDelegate {
         self.connectedTouchscreen ?? self.connectedScreens.last
     }
 
-    
-    func action(for gesture: TUCCursorGesture) -> TUCCursorAction {
-        switch gesture {
-        case .TUCCursorGestureTouchDown:
-            return isClickWindowToFrontEnabled ? .moveClickIfNeeded : .move
-            
-        case .TUCCursorGestureTap:
-            return .click
-            
-        case .TUCCursorGestureLongPress:
-            return .secondaryDrag
-            
-        case .TUCCursorGestureDrag:
-            return isClickOnLiftEnabled ? .pointAndClick : (isScrollingWithOneFingerEnabled ? .scroll : .move)
-            
-        case .TUCCursorGestureHoldAndDrag:
-            return .secondaryDrag
-            
-        case .TUCCursorGestureTapSecondFinger:
-            return isSecondaryClickEnabled ? .secondaryClick : .none
-            
-        case .TUCCursorGestureTwoFingerDrag:
-            return .scroll
-            
-        case .TUCCursorGesturePinch:
-            return isMagnificationEnabled ? .magnify : .none
-            
-        default:
-            return .none
-        }
-    }
-    
-    
-    
     func touchscreenDidConnect() {
         self.lastDateUSBAdded = Date()
 
@@ -421,29 +388,21 @@ extension TouchUp {
             return("Assign Mouse Events to",
                    "Specifies which screen should receive the touch events.")
             
-        case \.isScrollingWithOneFingerEnabled:
-            return("One Finger Scroll",
-                   "Use one-finger drag for scrolling instead of moving the cursor.")
-            
+        case \.isWindowTitleBarDragEnabled:
+            return("Move Windows by Title Bar Drag",
+                   "Drag from a window title bar to move that window.")
+
         case \.isSecondaryClickEnabled:
-            return("Secondary Click",
-                   "While your pointing finger is resting on the screen, tap another finger in proximity to it to generate a secondary click event at the location of the first finger.")
+            return("Two Finger Tap Secondary Click",
+                   "Tap with two fingers to generate a secondary click.")
             
-        case \.isMagnificationEnabled:
-            return("Magnification",
-                   "Pinch two fingers to increase or decrease the size of the content. (EXPERIMENTAL)")
-            
-        case \.isClickWindowToFrontEnabled:
-            return("Bring Windows to Front",
-                   "When touching a window that is not frontmost, bring it to front first. (EXPERIMENTAL)")
-            
-        case \.isClickOnLiftEnabled:
-            return("Point and click",
-                   "Very reduced input set for exhibits: Move cursor by dragging, and click by releasing. Overrides scrolling and dragging functionality.")
+        case \.isTwoFingerScrollEnabled:
+            return("Scroll with 2 Fingers",
+                   "Drag two fingers over the touchscreen to scroll content.")
             
         case \.holdDuration:
-            return("Hold Duration",
-                   "How long you have to hold a finger to initiate a right-click.")
+            return("Press and Hold Duration",
+                   "How long you have to hold a finger before a right-click begins.")
             
         case \.doubleClickDistance:
             return("Double Click Zone",
@@ -493,7 +452,7 @@ enum ConnectionState: Int {
 }
                  
                  
-extension TUCScreen: Identifiable {
+extension TUCScreen: @retroactive Identifiable {
     func matching(name:String, id:UInt) -> Float {
         let sameName = self.name == name
         let sameID = self.id == id

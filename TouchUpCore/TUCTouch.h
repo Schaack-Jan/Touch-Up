@@ -33,7 +33,6 @@ typedef NS_ENUM(NSUInteger, TUCCursorAction) {
     TUCCursorActionDrag,
     TUCCursorActionClick,
     TUCCursorActionSecondaryClick,
-    TUCCursorActionSecondaryDrag,
     TUCCursorActionScroll,
     TUCCursorActionMagnify
 };

@@ -74,41 +74,25 @@ struct SettingsView: View {
     
     var gestureSettings: some View {
         Group {
-            
-            let mode_ = Binding {
-                model.isClickOnLiftEnabled ? 2 : (model.isScrollingWithOneFingerEnabled ? 1 : 0)
-            } set: { value in
-                model.isScrollingWithOneFingerEnabled = value == 1
-                model.isClickOnLiftEnabled = value == 2
+            Toggle(isOn: $model.isWindowTitleBarDragEnabled) {
+                SettingsExplanationLabel(labels: model.uiLabels(for: \.isWindowTitleBarDragEnabled))
             }
-            
-            Picker(selection: mode_) {
-                Text("Move Cursor").tag(0)
-                Text("Scroll").tag(1)
-                Text("Point and Click").tag(2)
-            } label: {
-                SettingsExplanationLabel(labels: ("One Finger Drag", "Specify which action should occur when dragging one finger on the touch screen."))
-            }
-
             
             Toggle(isOn: $model.isSecondaryClickEnabled) {
                 SettingsExplanationLabel(labels: model.uiLabels(for: \.isSecondaryClickEnabled))
             }
             
-            Toggle(isOn: $model.isMagnificationEnabled) {
-                SettingsExplanationLabel(labels: model.uiLabels(for: \.isMagnificationEnabled))
+            Toggle(isOn: $model.isTwoFingerScrollEnabled) {
+                SettingsExplanationLabel(labels: model.uiLabels(for: \.isTwoFingerScrollEnabled))
             }
             
-            Toggle(isOn: $model.isClickWindowToFrontEnabled) {
-                SettingsExplanationLabel(labels: model.uiLabels(for: \.isClickWindowToFrontEnabled))
-            }
         }
     }
     
     
     var parameterSettings: some View {
         Group {
-            Slider(value: $model.holdDuration, in: 0.0...0.16, step: 0.02){
+            Slider(value: $model.holdDuration, in: 0.3...1.2, step: 0.05){
                 SettingsExplanationLabel(labels: model.uiLabels(for: \.holdDuration))
             }
             

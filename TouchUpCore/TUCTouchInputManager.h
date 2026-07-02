@@ -24,7 +24,7 @@ NS_ASSUME_NONNULL_BEGIN
  Allows to deactiate that the framework processes touches to post them as mouse events.
  The default value is YES.
  */
-@property BOOL postMouseEvents;
+@property (nonatomic) BOOL postMouseEvents;
 
 
 /**
@@ -33,9 +33,24 @@ NS_ASSUME_NONNULL_BEGIN
 @property CGFloat doubleClickTolerance;
 
 /**
- How long the user has to hold before a drag gesture turns into holdAndDrag.
+ How long the user has to press and hold before a right mouse button gesture starts.
  */
 @property NSTimeInterval holdDuration;
+
+/**
+ Enables moving windows by dragging from a recognized title bar or window chrome area.
+ */
+@property BOOL windowTitleBarDragEnabled;
+
+/**
+ Enables optional two-finger tap secondary clicks.
+ */
+@property BOOL twoFingerTapSecondaryClickEnabled;
+
+/**
+ Enables two-finger scroll events.
+ */
+@property BOOL twoFingerScrollEnabled;
 
 /**
  If a touch is no longer reported by the screen, wait for this number of incoming reports bevore deleting it from the touch set.

@@ -37,8 +37,11 @@ NS_ASSUME_NONNULL_BEGIN
  */
 - (nullable TUCScreen *)touchscreen;
 
+@optional
+
 /**
- Used to customize which mouse events are posted by the input manager.
+ Legacy hook used by the previous gesture pipeline to customize mouse events.
+ The Windows gesture profile is handled internally by TUCTouchInputManager.
  */
 - (TUCCursorAction)actionForGesture:(TUCCursorGesture)gesture;
 
