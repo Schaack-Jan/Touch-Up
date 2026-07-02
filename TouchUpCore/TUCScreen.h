@@ -16,6 +16,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property NSUInteger id;
 @property (strong) NSString *name;
+@property (copy) NSString *calibrationKey;
 @property CGFloat rotation;
 @property CGSize physicalSize;
 @property CGRect frame;

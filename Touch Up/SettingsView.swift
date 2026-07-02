@@ -8,6 +8,15 @@
 import SwiftUI
 import TouchUpCore
 
+private let calibrationNumberFormatter: NumberFormatter = {
+    let formatter = NumberFormatter()
+    formatter.numberStyle = .decimal
+    formatter.minimumFractionDigits = 0
+    formatter.maximumFractionDigits = 6
+    formatter.usesGroupingSeparator = false
+    return formatter
+}()
+
 struct SettingsView: View {
     
     @ObservedObject var model: TouchUp
@@ -59,8 +68,9 @@ struct SettingsView: View {
             
             let id_: Binding<UInt> = Binding {return (model.connectedTouchscreen?.id) ?? 0}
             set: { value in
-                model.connectedTouchscreen = model.connectedScreens.first(where:{$0.id == value})
-                model.rememeberCues()
+                if let screen = model.connectedScreens.first(where: {$0.id == value}) {
+                    model.assignTouchscreen(screen)
+                }
             }
 
             Picker(model.uiLabels(for: \.connectedTouchscreen).title, selection: id_) {
@@ -98,6 +108,19 @@ struct SettingsView: View {
             
             Slider(value: $model.doubleClickDistance, in: 0...8, step: 1) {
                 SettingsExplanationLabel(labels: model.uiLabels(for: \.doubleClickDistance))
+            }
+        }
+    }
+
+    var calibrationSettings: some View {
+        Group {
+            if model.connectedScreens.isEmpty {
+                Text("No connected monitors")
+                    .foregroundColor(.secondary)
+            } else {
+                ForEach(model.connectedScreens) { screen in
+                    MonitorCalibrationView(model: model, screen: screen)
+                }
             }
         }
     }
@@ -194,6 +217,10 @@ struct SettingsView: View {
                     parameterSettings
                 }
 
+                Section("Calibration") {
+                    calibrationSettings
+                }
+
                 Section {
                     troubleshootingSettings
                 } header: {
@@ -232,6 +259,10 @@ struct SettingsView: View {
                 LegacySection(title: "Parameters") {
                     parameterSettings
                 }
+
+                LegacySection(title: "Calibration") {
+                    calibrationSettings
+                }
                 
                 LegacySection(title: "Troubleshooting") {
                     troubleshootingSettings
@@ -255,6 +286,148 @@ struct SettingsView: View {
             model.checkHIDListenEventAccessGranted()
         }
         
+    }
+}
+
+struct MonitorCalibrationView: View {
+    @ObservedObject var model: TouchUp
+    let screen: TUCScreen
+    @State private var showsAdvanced = false
+    @State private var showsHistory = false
+
+    var body: some View {
+        let draft = draftBinding()
+        let current = model.calibration(for: screen)
+        let history = model.calibrationHistory(for: screen)
+
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(screen.calibrationKey)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                Toggle("Enable Calibration", isOn: draft.enabled)
+
+                Button("Auto Calibrate") {
+                    (NSApp.delegate as? AppDelegate)?.showCalibrationOverlay(for: screen)
+                }
+                .buttonStyle(.borderedProminent)
+
+                CalibrationNumberField(title: "X Offset (%)", value: scaledBinding(draft.xOffset, by: 100))
+                CalibrationNumberField(title: "Y Offset (%)", value: scaledBinding(draft.yOffset, by: 100))
+                CalibrationNumberField(title: "X Scale", value: draft.xScale)
+                CalibrationNumberField(title: "Y Scale", value: draft.yScale)
+
+                DisclosureGroup("Advanced", isExpanded: $showsAdvanced) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        CalibrationNumberField(title: "X Skew (%)", value: scaledBinding(draft.xSkew, by: 100))
+                        CalibrationNumberField(title: "Y Skew (%)", value: scaledBinding(draft.ySkew, by: 100))
+                    }
+                    .padding(.top, 4)
+                }
+
+                HStack {
+                    Button("Apply") {
+                        model.applyCalibration(for: screen)
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    Button("Undo") {
+                        model.undoCalibration(for: screen)
+                    }
+                    .disabled(!model.canUndoCalibration(for: screen))
+
+                    Button("Reset to Default") {
+                        model.resetCalibration(for: screen)
+                    }
+
+                    Spacer()
+                }
+
+                DisclosureGroup("Previous Versions", isExpanded: $showsHistory) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if history.isEmpty {
+                            Text("No previous versions")
+                                .foregroundColor(.secondary)
+                        } else {
+                            ForEach(history) { version in
+                                HStack(alignment: .firstTextBaseline) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(version.createdAt.formatted(date: .abbreviated, time: .shortened))
+                                            .font(.caption)
+                                        Text(summary(for: version))
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                            .lineLimit(1)
+                                    }
+
+                                    Spacer()
+
+                                    Button("Restore") {
+                                        model.restoreCalibrationVersion(version, for: screen)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .padding(.top, 4)
+                }
+            }
+            .padding(.vertical, 4)
+        } label: {
+            HStack {
+                Text(screen.name)
+                Spacer()
+                Text(current.enabled ? "Active" : "Default")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+    }
+
+    private func draftBinding() -> Binding<TouchCalibration> {
+        Binding {
+            model.draftCalibration(for: screen)
+        } set: { calibration in
+            model.updateCalibrationDraft(calibration, for: screen)
+        }
+    }
+
+    private func summary(for calibration: TouchCalibration) -> String {
+        String(
+            format: "offset %.4g%%, %.4g%%  scale %.4g, %.4g  skew %.4g%%, %.4g%%",
+            calibration.xOffset * 100,
+            calibration.yOffset * 100,
+            calibration.xScale,
+            calibration.yScale,
+            calibration.xSkew * 100,
+            calibration.ySkew * 100
+        )
+    }
+
+    private func scaledBinding(_ binding: Binding<CGFloat>, by scale: CGFloat) -> Binding<CGFloat> {
+        Binding {
+            binding.wrappedValue * scale
+        } set: { value in
+            binding.wrappedValue = value / scale
+        }
+    }
+}
+
+struct CalibrationNumberField: View {
+    let title: String
+    @Binding var value: CGFloat
+
+    var body: some View {
+        HStack {
+            Text(title)
+            Spacer()
+            TextField(title, value: $value, formatter: calibrationNumberFormatter)
+                .multilineTextAlignment(.trailing)
+                .frame(width: 96)
+        }
     }
 }
 

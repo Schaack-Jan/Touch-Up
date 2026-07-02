@@ -38,6 +38,8 @@
         
         _location = CGPointZero;
         _previousLocation = CGPointZero;
+        _rawLocation = CGPointZero;
+        _previousRawLocation = CGPointZero;
     }
     return self;
 }
@@ -66,6 +68,17 @@
 - (void)setLocation:(CGPoint)location {
     _previousLocation = _location;
     _location = location;
+}
+
+@synthesize rawLocation = _rawLocation;
+
+- (CGPoint)rawLocation {
+    return _rawLocation;
+}
+
+- (void)setRawLocation:(CGPoint)rawLocation {
+    _previousRawLocation = _rawLocation;
+    _rawLocation = rawLocation;
 }
 
 
@@ -114,10 +127,11 @@
         phase = [NSString stringWithFormat:@"Phase %ld", self.phase];
     }
     
-    return [NSString stringWithFormat:@"Touch %ld/%ld: Location: %@ Phase:%@  OnSurface:%@",
+    return [NSString stringWithFormat:@"Touch %ld/%ld: Location: %@ RawLocation: %@ Phase:%@  OnSurface:%@",
             self.sourceIdentifier,
             self.contactID,
             NSStringFromPoint(self.location),
+            NSStringFromPoint(self.rawLocation),
             phase,
             [NSNumber numberWithBool:self.isOnSurface]];
 }

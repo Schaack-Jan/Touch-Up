@@ -9,6 +9,47 @@
 
 @implementation TUCScreen
 
++ (NSString *)normalizedCalibrationKeyComponent:(NSString *)string {
+    NSMutableString *normalized = [NSMutableString string];
+    NSString *lowercase = [string lowercaseString];
+    NSCharacterSet *allowed = [NSCharacterSet alphanumericCharacterSet];
+    BOOL previousWasSeparator = NO;
+
+    for (NSUInteger i = 0; i < lowercase.length; i++) {
+        unichar character = [lowercase characterAtIndex:i];
+        if ([allowed characterIsMember:character]) {
+            [normalized appendFormat:@"%C", character];
+            previousWasSeparator = NO;
+        } else if (!previousWasSeparator && normalized.length > 0) {
+            [normalized appendString:@"-"];
+            previousWasSeparator = YES;
+        }
+    }
+
+    if ([normalized hasSuffix:@"-"]) {
+        [normalized deleteCharactersInRange:NSMakeRange(normalized.length - 1, 1)];
+    }
+
+    return normalized.length > 0 ? normalized : @"display";
+}
+
++ (NSString *)calibrationKeyForDisplayID:(CGDirectDisplayID)displayID name:(NSString *)name physicalSize:(CGSize)physicalSize {
+    uint32_t vendorID = CGDisplayVendorNumber(displayID);
+    uint32_t productID = CGDisplayModelNumber(displayID);
+    uint32_t serialNumber = CGDisplaySerialNumber(displayID);
+
+    if (vendorID != 0 && productID != 0) {
+        return [NSString stringWithFormat:@"edid:%u-%u-%u", vendorID, productID, serialNumber];
+    }
+
+    if (name.length > 0 && physicalSize.width > 0 && physicalSize.height > 0) {
+        NSString *normalizedName = [self normalizedCalibrationKeyComponent:name];
+        return [NSString stringWithFormat:@"screen:%@-%.0f-%.0f", normalizedName, physicalSize.width, physicalSize.height];
+    }
+
+    return [NSString stringWithFormat:@"display-id:%u", displayID];
+}
+
 - (instancetype)initWithScreen:(NSScreen *)screen frameOfFirstScreen:(CGRect)firstFrame {
     if (self = [super init]) {
         NSNumber *number = [[screen deviceDescription] valueForKey:@"NSScreenNumber"];
@@ -36,6 +77,10 @@
             // Fallback on earlier versions
             self.name =  [NSString stringWithFormat: @"Display %u", displayID];
         }
+
+        self.calibrationKey = [TUCScreen calibrationKeyForDisplayID:displayID
+                                                               name:self.name
+                                                       physicalSize:self.physicalSize];
         
     }
     
@@ -74,7 +119,7 @@
 
 
 - (NSString *)debugDescription {
-    return [NSString stringWithFormat:@"<[TUFScreen ID %ld] Frame: %@, Name: %@>", self.id, NSStringFromRect(self.frame), self.name];
+    return [NSString stringWithFormat:@"<[TUFScreen ID %ld] Frame: %@, Name: %@, CalibrationKey: %@>", self.id, NSStringFromRect(self.frame), self.name, self.calibrationKey];
 }
 
 + (NSArray *)allScreens {

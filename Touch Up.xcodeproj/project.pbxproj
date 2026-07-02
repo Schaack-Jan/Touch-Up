@@ -13,6 +13,8 @@
 		702F2BA8298D448D00415DEA /* TUCTouch.m in Sources */ = {isa = PBXBuildFile; fileRef = 702F2BA6298D448D00415DEA /* TUCTouch.m */; };
 		702F2BAA298D57BD00415DEA /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 702F2BA9298D57BD00415DEA /* SettingsView.swift */; };
 		704B2C6929978B2900A1DE4D /* DebugView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 704B2C6829978B2900A1DE4D /* DebugView.swift */; };
+		D4C0DE022C00000100000001 /* TouchCalibration.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4C0DE012C00000100000001 /* TouchCalibration.swift */; };
+		D4C0DE042C00000100000001 /* CalibrationAssistantView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4C0DE032C00000100000001 /* CalibrationAssistantView.swift */; };
 		704B2C6C2997B5A000A1DE4D /* TUCCursorUtilities.h in Headers */ = {isa = PBXBuildFile; fileRef = 704B2C6A2997B5A000A1DE4D /* TUCCursorUtilities.h */; };
 		704B2C6D2997B5A000A1DE4D /* TUCCursorUtilities.m in Sources */ = {isa = PBXBuildFile; fileRef = 704B2C6B2997B5A000A1DE4D /* TUCCursorUtilities.m */; };
 		7052F430298D2D280066014F /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7052F42F298D2D280066014F /* AppDelegate.swift */; };
@@ -62,6 +64,8 @@
 		702F2BA6298D448D00415DEA /* TUCTouch.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TUCTouch.m; sourceTree = "<group>"; };
 		702F2BA9298D57BD00415DEA /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		704B2C6829978B2900A1DE4D /* DebugView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugView.swift; sourceTree = "<group>"; };
+		D4C0DE012C00000100000001 /* TouchCalibration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TouchCalibration.swift; sourceTree = "<group>"; };
+		D4C0DE032C00000100000001 /* CalibrationAssistantView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalibrationAssistantView.swift; sourceTree = "<group>"; };
 		704B2C6A2997B5A000A1DE4D /* TUCCursorUtilities.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TUCCursorUtilities.h; sourceTree = "<group>"; };
 		704B2C6B2997B5A000A1DE4D /* TUCCursorUtilities.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = TUCCursorUtilities.m; sourceTree = "<group>"; };
 		7052F42C298D2D280066014F /* Touch Up.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Touch Up.app"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -132,6 +136,8 @@
 			isa = PBXGroup;
 			children = (
 				70C8D696298D5D2B00CFA6D4 /* TouchUp.swift */,
+				D4C0DE012C00000100000001 /* TouchCalibration.swift */,
+				D4C0DE032C00000100000001 /* CalibrationAssistantView.swift */,
 				7052F42F298D2D280066014F /* AppDelegate.swift */,
 				702F2BA9298D57BD00415DEA /* SettingsView.swift */,
 				704B2C6829978B2900A1DE4D /* DebugView.swift */,
@@ -285,6 +291,8 @@
 				7052F430298D2D280066014F /* AppDelegate.swift in Sources */,
 				702F2BAA298D57BD00415DEA /* SettingsView.swift in Sources */,
 				70C8D697298D5D2B00CFA6D4 /* TouchUp.swift in Sources */,
+				D4C0DE022C00000100000001 /* TouchCalibration.swift in Sources */,
+				D4C0DE042C00000100000001 /* CalibrationAssistantView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

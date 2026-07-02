@@ -57,6 +57,8 @@ typedef NS_ENUM(NSUInteger, TUCCursorAction) {
 
 @property (nonatomic) CGPoint location;
 @property CGPoint previousLocation;
+@property (nonatomic) CGPoint rawLocation;
+@property CGPoint previousRawLocation;
 
 @property NSInteger lastUpdated; // the page ID during last update
 

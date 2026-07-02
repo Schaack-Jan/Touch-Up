@@ -13,6 +13,7 @@ class TouchUp: NSObject, ObservableObject {
     
     let touchManager: TUCTouchInputManager
     private let gestureDefaultsVersion = 3
+    private let calibrationStoreDefaultsKey = "touchCalibrationStore.v1"
     @Published var touches = [TUCTouch]()
     
     
@@ -40,6 +41,9 @@ class TouchUp: NSObject, ObservableObject {
     
     @Published var connectedScreens = [TUCScreen]()
     var connectedTouchscreen: TUCScreen?
+
+    @Published var calibrationStore = TouchCalibrationStore.empty
+    @Published var calibrationDrafts = [String: TouchCalibration]()
     
     var lastDateUSBAdded: Date?
     var lastDateScreenAdded: Date?
@@ -173,6 +177,8 @@ class TouchUp: NSObject, ObservableObject {
         if !self.identifyPreferredOrNoScreen() {
             self.connectedTouchscreen = self.connectedScreens.last
         }
+
+        self.syncCalibrationsToTouchManager()
     }
     
     
@@ -311,6 +317,8 @@ extension TouchUp {
         errorResistance = defaults.integer(forKey: "errorResistance")
         ignoreOriginTouches = defaults.bool(forKey: "ignoreOriginTouches")
         
+        loadCalibrationStore()
+        syncCalibrationsToTouchManager()
         
         self.observers = [
             $isPublishingMouseEventsEnabled.assign(to: \.postMouseEvents, on: touchManager),
@@ -344,6 +352,109 @@ extension TouchUp {
         defaults.set(isTwoFingerScrollEnabled, forKey: "isTwoFingerScrollEnabled")
     }
     
+}
+
+
+// MARK: - Touchscreen Calibration
+extension TouchUp {
+
+    func calibration(for screen: TUCScreen) -> TouchCalibration {
+        calibrationStore.calibration(for: screen)
+    }
+
+    func draftCalibration(for screen: TUCScreen) -> TouchCalibration {
+        calibrationDrafts[screen.calibrationKey] ?? calibration(for: screen)
+    }
+
+    func updateCalibrationDraft(_ calibration: TouchCalibration, for screen: TUCScreen) {
+        calibrationDrafts[screen.calibrationKey] = calibration.sanitized(for: screen)
+    }
+
+    func assignTouchscreen(_ screen: TUCScreen) {
+        connectedTouchscreen = screen
+        rememeberCues()
+        touchManager.assignAllTouchDevices(toDisplayID: screen.id)
+    }
+
+    func applyCalibration(for screen: TUCScreen) {
+        calibrationStore.apply(draftCalibration(for: screen), for: screen)
+        saveCalibrationStore()
+        calibrationDrafts[screen.calibrationKey] = calibration(for: screen)
+        syncCalibrationsToTouchManager()
+    }
+
+    func applyGeneratedCalibration(_ calibration: TouchCalibration, for screen: TUCScreen) {
+        calibrationDrafts[screen.calibrationKey] = calibration.sanitized(for: screen)
+        applyCalibration(for: screen)
+    }
+
+    func undoCalibration(for screen: TUCScreen) {
+        calibrationStore.undo(for: screen)
+        saveCalibrationStore()
+        calibrationDrafts[screen.calibrationKey] = calibration(for: screen)
+        syncCalibrationsToTouchManager()
+    }
+
+    func resetCalibration(for screen: TUCScreen) {
+        calibrationStore.reset(for: screen)
+        saveCalibrationStore()
+        calibrationDrafts[screen.calibrationKey] = calibration(for: screen)
+        syncCalibrationsToTouchManager()
+    }
+
+    func calibrationHistory(for screen: TUCScreen) -> [TouchCalibration] {
+        calibrationStore.history(for: screen)
+    }
+
+    func restoreCalibrationVersion(_ calibration: TouchCalibration, for screen: TUCScreen) {
+        calibrationStore.restore(calibration, for: screen)
+        saveCalibrationStore()
+        calibrationDrafts[screen.calibrationKey] = self.calibration(for: screen)
+        syncCalibrationsToTouchManager()
+    }
+
+    func canUndoCalibration(for screen: TUCScreen) -> Bool {
+        !calibrationHistory(for: screen).isEmpty
+    }
+
+    func syncCalibrationsToTouchManager() {
+        var calibrations = [String: TUCTouchCalibration]()
+
+        for (key, calibration) in calibrationStore.current {
+            calibrations[key] = calibration.objectiveCCalibration()
+        }
+
+        touchManager.calibrationsByMonitorKey = calibrations
+    }
+
+    private func loadCalibrationStore() {
+        let defaults = UserDefaults.standard
+
+        guard let data = defaults.data(forKey: calibrationStoreDefaultsKey) else {
+            calibrationStore = .empty
+            calibrationDrafts = [:]
+            return
+        }
+
+        do {
+            var store = try JSONDecoder().decode(TouchCalibrationStore.self, from: data)
+            store.normalize()
+            calibrationStore = store
+        } catch {
+            calibrationStore = .empty
+        }
+
+        calibrationDrafts = [:]
+    }
+
+    private func saveCalibrationStore() {
+        do {
+            let data = try JSONEncoder().encode(calibrationStore)
+            UserDefaults.standard.set(data, forKey: calibrationStoreDefaultsKey)
+        } catch {
+            assertionFailure("Failed to encode touch calibration store: \(error)")
+        }
+    }
 }
 
 

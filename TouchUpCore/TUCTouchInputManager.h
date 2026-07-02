@@ -13,12 +13,29 @@
 NS_ASSUME_NONNULL_BEGIN
 
 
+@interface TUCTouchCalibration : NSObject
+
+@property BOOL enabled;
+@property CGFloat xOffset;
+@property CGFloat yOffset;
+@property CGFloat xScale;
+@property CGFloat yScale;
+@property CGFloat xSkew;
+@property CGFloat ySkew;
+
+- (CGPoint)applyToPoint:(CGPoint)point;
++ (instancetype)identityCalibration;
+
+@end
+
 
 @interface TUCTouchInputManager : NSObject
 
 @property (weak, nonatomic) id<TUCTouchDelegate> delegate;
 
 @property (strong, atomic) NSMutableSet<TUCTouch *> *touchSet;
+
+@property (copy, nonatomic) NSDictionary<NSString *, TUCTouchCalibration *> *calibrationsByMonitorKey;
 
 /**
  Allows to deactiate that the framework processes touches to post them as mouse events.
@@ -76,6 +93,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (void)stop;
 
+
+- (void)assignAllTouchDevicesToDisplayID:(NSUInteger)displayID;
 
 
 - (CGPoint)convertScreenPointRelativeToAbsolute:(CGPoint)relativePoint;

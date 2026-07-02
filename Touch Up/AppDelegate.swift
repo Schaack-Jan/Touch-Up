@@ -8,6 +8,7 @@
 import Cocoa
 import SwiftUI
 import Combine
+import TouchUpCore
 
 
 @main
@@ -31,6 +32,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     lazy var debugOverlay: DebugOverlay = {
         return DebugOverlay.overlay(model: self.model)
     }()
+
+    var calibrationOverlay: CalibrationOverlay?
     
     @IBAction func toggleActivationMenu(_ sender: Any) {
         self.model.isPublishingMouseEventsEnabled.toggle()
@@ -106,6 +109,33 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         
         self.debugOverlay.makeVisible()
+    }
+
+    func showCalibrationOverlay(for screen: TUCScreen) {
+        let preState = self.model.isPublishingMouseEventsEnabled
+        self.model.assignTouchscreen(screen)
+        self.model.isPublishingMouseEventsEnabled = false
+
+        let overlay = CalibrationOverlay.overlay(model: self.model, screen: screen) { [weak self] result in
+            guard let self else {
+                return
+            }
+
+            switch result {
+            case .completed(let calibration):
+                self.model.applyGeneratedCalibration(calibration, for: screen)
+            case .cancelled:
+                break
+            }
+
+            self.calibrationOverlay?.close()
+            self.calibrationOverlay = nil
+            self.model.isPublishingMouseEventsEnabled = preState
+            self.settingsWindow.makeVisible()
+        }
+
+        self.calibrationOverlay = overlay
+        overlay.makeVisible()
     }
 }
 
@@ -212,6 +242,62 @@ class DebugOverlay: NSWindow {
             self.setIsVisible(true)
             controller.view.exitFullScreenMode(options: nil)
         }
+        super.close()
+    }
+}
+
+class CalibrationOverlay: NSWindow {
+
+    var calibrationScreen: TUCScreen?
+
+    static func overlay(model: TouchUp, screen: TUCScreen, completion: @escaping (CalibrationAssistantResult) -> Void) -> CalibrationOverlay {
+        let vc = NSHostingController(rootView: CalibrationAssistantView(model: model, screen: screen, completion: completion))
+
+        let window = CalibrationOverlay(contentRect: .zero,
+                                        styleMask: [.resizable, .miniaturizable, .fullSizeContentView],
+                                        backing: .buffered,
+                                        defer: true,
+                                        screen: nil)
+
+        window.title = "Touch Calibration"
+        window.tabbingMode = .disallowed
+        window.calibrationScreen = screen
+
+        let windowController = NSWindowController(window: window)
+        windowController.contentViewController = vc
+
+        return window
+    }
+
+    func makeVisible() {
+        self.setIsVisible(true)
+        self.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+
+        guard let controller = self.contentViewController,
+              let screen = calibrationScreen?.systemScreen() else {
+            return
+        }
+
+        self.level = .screenSaver
+        let presentationOptions: NSApplication.PresentationOptions = [.hideDock, .hideMenuBar, .disableProcessSwitching]
+        let options: [NSView.FullScreenModeOptionKey: NSNumber] = [
+            .fullScreenModeApplicationPresentationOptions: NSNumber(value: presentationOptions.rawValue),
+            .fullScreenModeWindowLevel: NSNumber(value: kCGNormalWindowLevel),
+            .fullScreenModeAllScreens: NSNumber(booleanLiteral: false)
+        ]
+
+        self.setIsVisible(false)
+        controller.view.enterFullScreenMode(screen, withOptions: options)
+    }
+
+    override func close() {
+        if let controller = self.contentViewController {
+            self.level = .normal
+            self.setIsVisible(true)
+            controller.view.exitFullScreenMode(options: nil)
+        }
+
         super.close()
     }
 }

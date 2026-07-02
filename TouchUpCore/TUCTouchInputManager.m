@@ -151,6 +151,49 @@ typedef NS_ENUM(NSInteger, TUCWindowsGestureKind) {
 
 @end
 
+@implementation TUCTouchCalibration
+
++ (instancetype)identityCalibration {
+    TUCTouchCalibration *calibration = [TUCTouchCalibration new];
+    calibration.enabled = NO;
+    calibration.xOffset = 0;
+    calibration.yOffset = 0;
+    calibration.xScale = 1;
+    calibration.yScale = 1;
+    calibration.xSkew = 0;
+    calibration.ySkew = 0;
+    return calibration;
+}
+
+- (instancetype)init {
+    if (self = [super init]) {
+        _enabled = NO;
+        _xOffset = 0;
+        _yOffset = 0;
+        _xScale = 1;
+        _yScale = 1;
+        _xSkew = 0;
+        _ySkew = 0;
+    }
+    return self;
+}
+
+- (CGPoint)applyToPoint:(CGPoint)point {
+    if (!self.enabled) {
+        return point;
+    }
+
+    CGFloat calibratedX = point.x * self.xScale + point.y * self.xSkew + self.xOffset;
+    CGFloat calibratedY = point.y * self.yScale + point.x * self.ySkew + self.yOffset;
+
+    calibratedX = MAX(0.0, MIN(1.0, calibratedX));
+    calibratedY = MAX(0.0, MIN(1.0, calibratedY));
+
+    return CGPointMake(calibratedX, calibratedY);
+}
+
+@end
+
 @interface TUCTouchInputManager ()
 
 // ─── IOKit HID device ─────────────────────────────────────────────────────
@@ -181,6 +224,8 @@ typedef NS_ENUM(NSInteger, TUCWindowsGestureKind) {
 - (nullable TUCTouch *)touchWithContactID:(NSInteger)contactID inTouches:(NSArray<TUCTouch *> *)touches;
 - (CGFloat)distanceInMMFrom:(CGPoint)a to:(CGPoint)b onScreen:(TUCScreen *)screen;
 - (CGPoint)absoluteLocationForTouch:(TUCTouch *)touch;
+- (CGPoint)applyCalibrationToPoint:(CGPoint)point onScreen:(TUCScreen *)screen;
+- (TUCTouchCalibration *)calibrationForScreen:(TUCScreen *)screen;
 - (CGPoint)centroidForTouch:(TUCTouch *)a otherTouch:(TUCTouch *)b;
 - (CGFloat)relativeDistanceBetweenTouch:(TUCTouch *)a otherTouch:(TUCTouch *)b;
 - (BOOL)isPointInDraggableWindowArea:(CGPoint)screenPoint onScreen:(TUCScreen *)screen;
@@ -385,6 +430,13 @@ static IOHIDElementRef TUCContactCollectionForElement(IOHIDElementRef element, B
 
 - (void)stop {
     [self stopUSBHIDListening];
+}
+
+- (void)assignAllTouchDevicesToDisplayID:(NSUInteger)displayID {
+    for (TUCUSBHIDTouchDevice *touchDevice in [_hidTouchDevicesByRegistryID allValues]) {
+        touchDevice.assignedDisplayID = displayID;
+        [self cancelTouchesForSourceIdentifier:touchDevice.sourceIdentifier];
+    }
 }
 
 - (void)setPostMouseEvents:(BOOL)postMouseEvents {
@@ -839,11 +891,13 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
     TUCInputSourceState *sourceState = [self inputSourceStateForIdentifier:sourceIdentifier];
     TUCScreen *touchscreen = screen ?: [self touchscreen];
     
-    CGPoint point = [self convertDigitizerPoint:digitizerPoint toRelativeScreenPointOnScreen:touchscreen];
+    CGPoint rawPoint = [self convertDigitizerPoint:digitizerPoint toRelativeScreenPointOnScreen:touchscreen];
+    CGPoint point = [self applyCalibrationToPoint:rawPoint onScreen:touchscreen];
     
     BOOL isNewTouch = NO;
     TUCTouch *touch = [self obtainTouchWithID:contactID sourceIdentifier:sourceIdentifier isNew:&isNewTouch];
     
+    [touch setRawLocation:rawPoint];
     [touch setLocation: point];
     [touch setIsOnSurface:isOnSurface];
     [touch setConfidenceFlag:confidenceFlag];
@@ -1467,6 +1521,20 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
     return [self convertScreenPointRelativeToAbsolute:touch.location onScreen:screen];
 }
 
+- (CGPoint)applyCalibrationToPoint:(CGPoint)point onScreen:(TUCScreen *)screen {
+    TUCTouchCalibration *calibration = [self calibrationForScreen:screen];
+    return [calibration applyToPoint:point];
+}
+
+- (TUCTouchCalibration *)calibrationForScreen:(TUCScreen *)screen {
+    if (screen.calibrationKey.length == 0) {
+        return [TUCTouchCalibration identityCalibration];
+    }
+
+    TUCTouchCalibration *calibration = self.calibrationsByMonitorKey[screen.calibrationKey];
+    return calibration ?: [TUCTouchCalibration identityCalibration];
+}
+
 - (CGPoint)centroidForTouch:(TUCTouch *)a otherTouch:(TUCTouch *)b {
     return CGPointMake((a.location.x + b.location.x) * 0.5,
                        (a.location.y + b.location.y) * 0.5);
@@ -1989,6 +2057,7 @@ static void usbRemovedCallback(void *refcon, io_iterator_t iterator) {
         self.hidTouchDevicesByRegistryID = [NSMutableDictionary dictionary];
         self.inputSourceStatesByIdentifier = [NSMutableDictionary dictionary];
         self.nextTouchDeviceIdentifier = 1;
+        self.calibrationsByMonitorKey = @{};
         
         self.doubleClickTolerance = 5;
         self.holdDuration = TUCDefaultHoldDuration;
