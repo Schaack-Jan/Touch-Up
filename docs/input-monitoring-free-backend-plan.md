@@ -392,7 +392,7 @@ Die Umsetzung gilt erst als fertig, wenn:
 | Backend-Abstraktion implementieren | Erledigt | IOHID-Adapter hinter `TUCTouchInputBackend`; `TouchUpCore` Debug-Build erfolgreich. |
 | Fake-Backend und Core-Tests | Erledigt | Fake-Backend prueft Start/Stop, Frame-Verarbeitung und Disconnect-Cleanup; `TouchUpCore` Tests erfolgreich. |
 | DriverKit-Entitlements/Signing klaeren | Erledigt | Siehe `docs/driverkit-entitlements-signing-notes.md`; Apple-Entitlement- und Matching-Gates dokumentiert. |
-| DriverKit/System-Extension POC | Offen | Hartes Gate: Touch ohne Input Monitoring, keine Nicht-Touch-HID-Uebernahme. |
+| DriverKit/System-Extension POC | Blockiert | Externes Gate: Apple-gewaehrte DriverKit/USB- oder HID-Entitlements, Provisioning-Profil und Touch-Hardware-QA fehlen. |
 | Generischen HID-Parser bauen | Offen | Descriptor-Fixtures und Multi-Touch-Modi. |
 | Backend-Service/XPC bauen | Offen | Versionierte lokale API, Diagnostics, Device-Lifecycle. |
 | TouchUpCore auf neues Backend umstellen | Offen | Neuer Standardpfad, alter IOHID-Pfad hoechstens Debug/Fallback. |
@@ -410,6 +410,7 @@ Die Umsetzung gilt erst als fertig, wenn:
 | 2026-07-03 | Backend-Abstraktion implementieren | dieser Commit | Backend-Protokoll, Modelle und IOHID-Adapter eingefuehrt; Manager verarbeitet generische Backend-Frames. |
 | 2026-07-03 | Fake-Backend und Core-Tests | dieser Commit | Fake-Backend im Test-Target ergaenzt; `xcodebuild ... test` erfolgreich ausserhalb der Sandbox ausgefuehrt. |
 | 2026-07-03 | DriverKit-Entitlements/Signing klaeren | dieser Commit | Apple-Entitlements, aktueller Repo-Stand und POC-Gates dokumentiert. |
+| 2026-07-03 | DriverKit/System-Extension POC bewerten | dieser Commit | POC nicht ausfuehrbar ohne Apple-gewaehrtes Profil und Hardware; kein Scheintarget in den Hauptpfad aufgenommen. |
 
 ## Quellen
 
