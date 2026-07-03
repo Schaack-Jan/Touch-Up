@@ -35,7 +35,7 @@ struct SettingsView: View {
                     model.grantRequiredAccess()
                 } label: {
                     
-                    Text("Grant Required Access")
+                    Text("Grant Accessibility Access")
                 }
                 .buttonStyle(BorderedProminentButtonStyle())
             }

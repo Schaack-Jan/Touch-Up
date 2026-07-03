@@ -72,12 +72,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
         )
         
-        self.model.touchManager.start()
-        
-        
         if model.needsPermissionsPrompt {
             self.showPreferences(nil)
         } else {
+            self.model.startTouchManagerIfPermissionsAreGranted()
             self.scheduleStartupTouchMappingIfNeeded()
         }
         
@@ -89,13 +87,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ aNotification: Notification) {
         // Insert code here to tear down your application
-        self.model.touchManager.stop()
+        self.model.stopTouchManager()
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
         self.model.checkAccessibilityAccessGranted()
-        self.model.checkHIDListenEventAccessGranted(restartIfNewlyGranted: true)
-        self.scheduleStartupTouchMappingIfNeeded()
+        self.model.checkHIDListenEventAccessGranted()
+        if self.model.startTouchManagerIfPermissionsAreGranted() {
+            self.scheduleStartupTouchMappingIfNeeded()
+        }
     }
 
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
@@ -105,7 +105,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     @IBAction func showPreferences(_ sender: Any?) {
         self.model.checkAccessibilityAccessGranted()
-        self.model.checkHIDListenEventAccessGranted(restartIfNewlyGranted: true)
+        self.model.checkHIDListenEventAccessGranted()
+        self.model.startTouchManagerIfPermissionsAreGranted()
         self.settingsWindow.makeVisible()
     }
     

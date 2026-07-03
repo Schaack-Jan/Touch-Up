@@ -14,6 +14,7 @@ class TouchUp: NSObject, ObservableObject {
     let touchManager: TUCTouchInputManager
     private let gestureDefaultsVersion = 3
     private let calibrationStoreDefaultsKey = "touchCalibrationStore.v1"
+    private var isTouchManagerRunning = false
     @Published var touches = [TUCTouch]()
     
     
@@ -73,16 +74,23 @@ class TouchUp: NSObject, ObservableObject {
         let checkOptPrompt = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as NSString
         let isGranted = AXIsProcessTrustedWithOptions([checkOptPrompt: prompt] as CFDictionary?)
         self.isAccessibilityAccessGranted = isGranted
+        if !isGranted {
+            stopTouchManager()
+        }
         return isGranted
     }
 
     func grantAccessibilityAccess() {
-        grantRequiredAccess()
+        _ = checkAccessibilityAccessGranted(prompt: true)
+        closeSettingsIfPermissionsAreGranted()
     }
 
     func grantRequiredAccess() {
-        checkAccessibilityAccessGranted(prompt: true)
-        requestHIDListenEventAccess(openSettingsIfDenied: false)
+        if !checkAccessibilityAccessGranted(prompt: needsAccessibilityAccessPrompt) {
+            return
+        }
+
+        requestHIDListenEventAccess(openSettingsIfDenied: true)
         closeSettingsIfPermissionsAreGranted()
     }
 
@@ -93,8 +101,9 @@ class TouchUp: NSObject, ObservableObject {
         isHIDListenEventAccessGranted = isGranted
 
         if restartIfNewlyGranted && isGranted && !wasGranted {
-            touchManager.stop()
-            touchManager.start()
+            restartTouchManagerIfPermissionsAreGranted()
+        } else if !isGranted {
+            stopTouchManager()
         }
 
         return isGranted
@@ -112,23 +121,65 @@ class TouchUp: NSObject, ObservableObject {
 
         if isGranted {
             if !wasGranted {
-                touchManager.stop()
-                touchManager.start()
+                restartTouchManagerIfPermissionsAreGranted()
+            } else {
+                startTouchManagerIfPermissionsAreGranted()
             }
             closeSettingsIfPermissionsAreGranted()
         } else {
-            touchManager.stop()
-            touchManager.start()
+            stopTouchManager()
             if openSettingsIfDenied {
-                openInputMonitoringPrivacySettings()
+                openInputMonitoringPrivacySettingsAfterTCCRegistration()
             }
+        }
+    }
+
+    @discardableResult
+    func startTouchManagerIfPermissionsAreGranted() -> Bool {
+        guard !needsPermissionsPrompt else {
+            stopTouchManager()
+            NSLog("[TouchUp] HID: waiting for Accessibility and Input Monitoring before starting USB HID listener")
+            return false
+        }
+
+        guard !isTouchManagerRunning else {
+            return true
+        }
+
+        touchManager.start()
+        isTouchManagerRunning = true
+        return true
+    }
+
+    func stopTouchManager() {
+        guard isTouchManagerRunning else {
+            return
+        }
+
+        touchManager.stop()
+        isTouchManagerRunning = false
+    }
+
+    private func restartTouchManagerIfPermissionsAreGranted() {
+        stopTouchManager()
+        startTouchManagerIfPermissionsAreGranted()
+    }
+
+    private func openInputMonitoringPrivacySettingsAfterTCCRegistration() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(400)) { [weak self] in
+            guard let self else {
+                return
+            }
+
+            self.openInputMonitoringPrivacySettings()
         }
     }
 
     func openInputMonitoringPrivacySettings() {
         let candidates = [
+            "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ListenEvent",
             "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent",
-            "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?listenEvent",
+            "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension",
             "x-apple.systempreferences:com.apple.preference.security?Privacy"
         ]
 
