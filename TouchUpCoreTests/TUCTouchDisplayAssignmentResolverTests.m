@@ -8,6 +8,8 @@
 
 @interface TUCTouchInputManager (TouchUpCoreTests)
 
+@property (strong) id<TUCTouchInputBackend> inputBackend;
+
 - (void)updateTouch:(NSInteger)contactID
        withLocation:(CGPoint)digitizerPoint
           onSurface:(BOOL)isOnSurface
@@ -16,6 +18,103 @@
    sourceIdentifier:(NSInteger)sourceIdentifier;
 - (CGPoint)absoluteLocationForTouch:(TUCTouch *)touch;
 - (void)cancelTouchesForSourceIdentifier:(NSInteger)sourceIdentifier;
+- (TUCScreen *)touchscreen;
+
+@end
+
+@interface TUCTestTouchInputManager : TUCTouchInputManager
+
+@property (strong) TUCScreen *testScreen;
+
+@end
+
+@implementation TUCTestTouchInputManager
+
+- (TUCScreen *)screenForTouchDevice:(TUCTouchBackendDevice *)touchDevice {
+    return self.testScreen ?: [super touchscreen];
+}
+
+@end
+
+@interface TUCFakeTouchInputBackend : NSObject <TUCTouchInputBackend>
+
+@property (weak, nonatomic, nullable) id<TUCTouchInputBackendDelegate> delegate;
+@property (strong, nonatomic, readonly) TUCTouchBackendAccessState *accessState;
+@property BOOL started;
+@property BOOL stopped;
+@property (strong) NSMutableArray<TUCTouchBackendDevice *> *devices;
+
+- (TUCTouchBackendDevice *)connectDeviceWithSourceIdentifier:(NSInteger)sourceIdentifier;
+- (void)disconnectDevice:(TUCTouchBackendDevice *)device;
+- (void)sendContactID:(NSInteger)contactID
+             location:(CGPoint)location
+            onSurface:(BOOL)onSurface
+                device:(TUCTouchBackendDevice *)device;
+
+@end
+
+@implementation TUCFakeTouchInputBackend
+
+- (instancetype)init {
+    if (self = [super init]) {
+        _devices = [NSMutableArray array];
+        _accessState = [TUCTouchBackendAccessState stateWithGranted:YES statusDescription:@"fake=granted"];
+    }
+    return self;
+}
+
+- (void)start {
+    self.started = YES;
+    self.stopped = NO;
+}
+
+- (void)stop {
+    self.stopped = YES;
+}
+
+- (NSArray<TUCTouchBackendDevice *> *)connectedDevices {
+    return [self.devices copy];
+}
+
+- (BOOL)requestAccess {
+    return YES;
+}
+
+- (TUCTouchBackendDevice *)connectDeviceWithSourceIdentifier:(NSInteger)sourceIdentifier {
+    TUCTouchBackendDevice *device = [TUCTouchBackendDevice new];
+    device.sourceIdentifier = sourceIdentifier;
+    device.registryID = (uint64_t)(1000 + sourceIdentifier);
+    device.vendorID = 1234;
+    device.productID = 5678;
+    device.name = [NSString stringWithFormat:@"Fake Touch %ld", (long)sourceIdentifier];
+    device.connectedDate = [NSDate date];
+    [self.devices addObject:device];
+    [self.delegate touchInputBackend:self deviceDidConnect:device];
+    return device;
+}
+
+- (void)disconnectDevice:(TUCTouchBackendDevice *)device {
+    [self.delegate touchInputBackend:self deviceDidDisconnect:device];
+    [self.devices removeObject:device];
+}
+
+- (void)sendContactID:(NSInteger)contactID
+             location:(CGPoint)location
+            onSurface:(BOOL)onSurface
+                device:(TUCTouchBackendDevice *)device {
+    TUCTouchBackendContact *contact = [TUCTouchBackendContact new];
+    contact.contactID = contactID;
+    contact.location = location;
+    contact.onSurface = onSurface;
+    contact.valid = YES;
+
+    TUCTouchBackendFrame *frame = [TUCTouchBackendFrame new];
+    frame.device = device;
+    frame.contacts = @[contact];
+    frame.sequenceNumber = 1;
+    frame.timestamp = [NSDate timeIntervalSinceReferenceDate];
+    [self.delegate touchInputBackend:self didReceiveTouchFrame:frame];
+}
 
 @end
 
@@ -311,6 +410,62 @@
     TUCTouch *remainingTouch = manager.touchSet.anyObject;
     XCTAssertEqual(remainingTouch.sourceIdentifier, 22);
     XCTAssertTrue(remainingTouch.isActive);
+}
+
+- (void)testFakeBackendFrameCreatesTouchThroughManagerPipeline {
+    TUCTestTouchInputManager *manager = [TUCTestTouchInputManager new];
+    TUCFakeTouchInputBackend *backend = [TUCFakeTouchInputBackend new];
+    manager.inputBackend = backend;
+    manager.testScreen = [self touchScreenWithID:20 name:@"Touch Display" frame:CGRectMake(0, 0, 100, 100) rotation:0 calibrationKey:@"touch"];
+
+    [manager start];
+    TUCTouchBackendDevice *device = [backend connectDeviceWithSourceIdentifier:42];
+    [backend sendContactID:7 location:CGPointMake(0.25, 0.75) onSurface:YES device:device];
+
+    XCTAssertTrue(backend.started);
+    XCTAssertEqual(manager.touchSet.count, 1);
+
+    TUCTouch *touch = manager.touchSet.anyObject;
+    XCTAssertEqual(touch.contactID, 7);
+    XCTAssertEqual(touch.sourceIdentifier, 42);
+    XCTAssertEqual(touch.screen.id, 20);
+    XCTAssertEqualWithAccuracy(touch.rawLocation.x, 0.25, 0.001);
+    XCTAssertEqualWithAccuracy(touch.rawLocation.y, 0.75, 0.001);
+}
+
+- (void)testFakeBackendDisconnectCancelsOnlyMatchingSourceIdentifier {
+    TUCTestTouchInputManager *manager = [TUCTestTouchInputManager new];
+    TUCFakeTouchInputBackend *backend = [TUCFakeTouchInputBackend new];
+    manager.inputBackend = backend;
+    manager.testScreen = [self touchScreenWithID:20 name:@"Touch Display" frame:CGRectMake(0, 0, 100, 100) rotation:0 calibrationKey:@"touch"];
+
+    [manager start];
+    TUCTouchBackendDevice *deviceA = [backend connectDeviceWithSourceIdentifier:11];
+    TUCTouchBackendDevice *deviceB = [backend connectDeviceWithSourceIdentifier:22];
+    [backend sendContactID:1 location:CGPointMake(0.2, 0.2) onSurface:YES device:deviceA];
+    [backend sendContactID:2 location:CGPointMake(0.8, 0.8) onSurface:YES device:deviceB];
+
+    [backend disconnectDevice:deviceA];
+
+    XCTAssertEqual(manager.touchSet.count, 1);
+    TUCTouch *remainingTouch = manager.touchSet.anyObject;
+    XCTAssertEqual(remainingTouch.sourceIdentifier, 22);
+    XCTAssertEqual(remainingTouch.contactID, 2);
+}
+
+- (void)testStoppingManagerStopsFakeBackendAndClearsActiveTouches {
+    TUCTestTouchInputManager *manager = [TUCTestTouchInputManager new];
+    TUCFakeTouchInputBackend *backend = [TUCFakeTouchInputBackend new];
+    manager.inputBackend = backend;
+    manager.testScreen = [self touchScreenWithID:20 name:@"Touch Display" frame:CGRectMake(0, 0, 100, 100) rotation:0 calibrationKey:@"touch"];
+
+    [manager start];
+    TUCTouchBackendDevice *device = [backend connectDeviceWithSourceIdentifier:42];
+    [backend sendContactID:7 location:CGPointMake(0.25, 0.75) onSurface:YES device:device];
+    [manager stop];
+
+    XCTAssertTrue(backend.stopped);
+    XCTAssertEqual(manager.touchSet.count, 0);
 }
 
 - (TUCTouchDisplayAssignmentResult *)resolveDevice:(TUCTouchDeviceDescriptor *)device

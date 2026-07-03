@@ -390,7 +390,7 @@ Die Umsetzung gilt erst als fertig, wenn:
 | Zielarchitektur festlegen | Erledigt | Driver ohne Monitorwissen, Backend-Service/API, bestehender Core fuer Mapping/Kalibrierung/Gesten. |
 | Plan-Dokument anlegen | Erledigt | Dieses Dokument. |
 | Backend-Abstraktion implementieren | Erledigt | IOHID-Adapter hinter `TUCTouchInputBackend`; `TouchUpCore` Debug-Build erfolgreich. |
-| Fake-Backend und Core-Tests | Offen | Touchframes, Device-Lifecycle, Disconnect, Gesten. |
+| Fake-Backend und Core-Tests | Erledigt | Fake-Backend prueft Start/Stop, Frame-Verarbeitung und Disconnect-Cleanup; `TouchUpCore` Tests erfolgreich. |
 | DriverKit-Entitlements/Signing klaeren | Offen | Muss vor echter System Extension passieren. |
 | DriverKit/System-Extension POC | Offen | Hartes Gate: Touch ohne Input Monitoring, keine Nicht-Touch-HID-Uebernahme. |
 | Generischen HID-Parser bauen | Offen | Descriptor-Fixtures und Multi-Touch-Modi. |
@@ -408,6 +408,7 @@ Die Umsetzung gilt erst als fertig, wenn:
 | --- | --- | --- | --- |
 | 2026-07-03 | Plan-Dokument versionieren | d220cb2 | Plan als Arbeitsgrundlage in Git aufgenommen. |
 | 2026-07-03 | Backend-Abstraktion implementieren | dieser Commit | Backend-Protokoll, Modelle und IOHID-Adapter eingefuehrt; Manager verarbeitet generische Backend-Frames. |
+| 2026-07-03 | Fake-Backend und Core-Tests | dieser Commit | Fake-Backend im Test-Target ergaenzt; `xcodebuild ... test` erfolgreich ausserhalb der Sandbox ausgefuehrt. |
 
 ## Quellen
 
