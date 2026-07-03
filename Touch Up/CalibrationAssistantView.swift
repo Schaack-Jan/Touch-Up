@@ -22,6 +22,7 @@ struct CalibrationAssistantView: View {
     @State private var holdStartDate: Date?
     @State private var waitingForLift = false
     @State private var errorMessage: String?
+    @State private var learnedSourceIdentifiers = Set<Int>()
 
     private let holdDuration: TimeInterval = 0.75
     private let minimumSamples = 8
@@ -159,6 +160,11 @@ struct CalibrationAssistantView: View {
             holdStartDate = nil
             sampleBuffer = []
             return
+        }
+
+        if !learnedSourceIdentifiers.contains(touch.sourceIdentifier) {
+            model.learnTouchAssignment(from: touch, to: screen)
+            learnedSourceIdentifiers.insert(touch.sourceIdentifier)
         }
 
         if waitingForLift {

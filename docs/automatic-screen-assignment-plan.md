@@ -21,27 +21,30 @@ Die manuelle Auswahl, auf welchem Screen Touch Up Mouse Events ausfuehrt, entfae
 - Touches auf einem Touchscreen steuern automatisch den dazugehoerigen Screen.
 - Wenn mehrere Touchscreens angeschlossen sind, wird jedes HID-Touchdevice separat einem Display zugeordnet.
 - Wenn die Zuordnung nicht eindeutig ist, bleibt die App benutzbar und waehlt einen deterministischen Fallback.
+- Nutzer koennen ein manuelles Mapping starten: Touch Up zeigt nacheinander jeden externen Monitor fullscreen und bindet die jeweils beruehrte HID-Quelle an diesen Monitor.
 - Debug- oder Diagnoseansichten duerfen die automatische Zuordnung anzeigen, aber nicht als normale Nutzerentscheidung verlangen.
 
 ### Funktionsanforderungen
 
 - Die automatische Zuordnung ist pro HID-Touchdevice, nicht global.
-- Jede Touchquelle erhaelt eine stabile `sourceIdentifier`-basierte Zuordnung.
+- Jede Touchquelle erhaelt eine Zuordnung pro HID-Geraet; `sourceIdentifier` gilt nur fuer die laufende Sitzung, eine gelernte Calibration-Zuordnung wird zusaetzlich ueber eine stabile Geraetekennung gespeichert.
 - Eine bestehende gueltige Zuordnung wird beibehalten, solange der Display weiterhin existiert.
 - Wird ein Display entfernt oder aendert sich die Display-Topologie, werden Zuordnungen neu validiert.
 - Aendert sich die Zuordnung eines aktiven Touchdevices, werden aktive Touches und Gesten dieser Quelle abgebrochen.
 - Mouse Events werden immer mit dem Screen berechnet, der am jeweiligen `TUCTouch.screen` haengt.
 - Calibration bleibt monitor-spezifisch und verwendet weiterhin `TUCScreen.calibrationKey`.
 - Das Calibration-Overlay darf keine globale Touchscreen-Zuweisung mehr setzen.
+- Manuelles Mapping darf bestehende automatische oder gelernte Zuordnungen ueberschreiben.
+- Monitor- oder Hersteller-spezifische Sonderfaelle sollen nicht im Resolver kodiert werden.
 
 ### Zuordnungsstrategie
 
-Prioritaet der automatischen Zuordnung:
+Prioritaet der Zuordnung:
 
-1. Bestehende `assignedDisplayID`, falls der Display weiterhin verbunden ist.
-2. Eindeutiger Match zwischen HID-Geraetename und Displayname.
-3. Hotplug-Korrelation: USB-Touchdevice und neuer Display erscheinen innerhalb eines kurzen Zeitfensters.
-4. Gelerntes Signal aus Calibration-Overlay: aktive Touchquelle wird dem kalibrierten Screen zugeordnet.
+1. Gelerntes Signal aus Manual-Mapping oder Calibration-Overlay: aktive Touchquelle wird dem gewaehlten Screen zugeordnet; bei Reconnects wird diese Zuordnung ueber stabile HID-Geraetemerkmale wiederverwendet.
+2. Bestehende `assignedDisplayID`, falls der Display weiterhin verbunden ist.
+3. Eindeutiger Match zwischen HID-Geraetename und Displayname.
+4. Anschlussreihenfolge: neu erkannte externe Displays und neu erkannte USB-Touchdevices werden innerhalb eines Zeitfensters paarweise verbunden.
 5. Single-device/single-screen-Fall.
 6. Noch nicht belegter Screen, wenn mehrere Touchdevices vorhanden sind.
 7. Deterministischer Fallback auf den ersten verfuegbaren Screen.
@@ -97,7 +100,17 @@ Jede Entscheidung soll intern einen Grund und eine Confidence erhalten, zum Beis
 - `CalibrationAssistantView.activeTouch()` soll weiterhin bevorzugt Touches verwenden, deren `touch.screen.calibrationKey` zum Overlay-Screen passt.
 - Fallback auf `activeTouches.first` bleibt nur fuer Diagnose/Recovery, nicht als globale Screen-Zuweisung.
 
-### Phase 5: Migration und Aufraeumen
+### Phase 5: Manuelles Mapping
+
+- In den Settings einen Button "Map Touchscreens" ergaenzen.
+- Beim Start des Mapping-Flows normale Mouse-Event-Ausgabe temporaer deaktivieren.
+- Vor dem Mapping alte gelernte/automatische Zuordnungen zuruecksetzen.
+- Externe Monitore nacheinander fullscreen anzeigen.
+- Beim ersten aktiven Touch auf dem angezeigten Monitor `sourceIdentifier -> displayID` lernen und persistieren.
+- Bereits im Mapping verwendete Touchquellen fuer die folgenden Schritte ignorieren.
+- Nach Abschluss Mouse-Event-Ausgabe wiederherstellen und Assignments refreshen.
+
+### Phase 6: Migration und Aufraeumen
 
 - Alte Defaults `touchscreenNameCue` und `touchscreenIDCue` nicht mehr lesen.
 - Keine harte Migration notwendig, wenn die Keys einfach ignoriert werden.
@@ -125,6 +138,8 @@ Aktuell gibt es kein dediziertes Test-Target. Zuerst soll ein `TouchUpCoreTests`
 - Bereits belegte Displays werden bei `nextUnassigned` vermieden.
 - Hotplug-Signal gewinnt gegen unsichere Fallbacks.
 - Gelerntes Calibration-Signal gewinnt gegen unsichere Fallbacks.
+- Gelerntes Manual-/Calibration-Signal gewinnt gegen bestehende falsche Assignments.
+- Controller- und Displaynamen ohne echte Uebereinstimmung erzeugen keine Hersteller-Alias-Zuordnung.
 
 ### Unit-Tests fuer Touch-Pipeline
 
@@ -142,6 +157,7 @@ Aktuell gibt es kein dediziertes Test-Target. Zuerst soll ein `TouchUpCoreTests`
 - `screenParametersDidChange()` aktualisiert Screens und triggert Assignment-Refresh, aber keine globale Zuweisung.
 - `showCalibrationOverlay(for:)` setzt keinen globalen Touchscreen.
 - Alte UserDefaults fuer `touchscreenNameCue` und `touchscreenIDCue` veraendern das Verhalten nicht.
+- Settings enthalten einen Mapping-Button, der den Fullscreen-Mapping-Flow startet.
 
 ### Manuelle QA
 
@@ -149,6 +165,8 @@ Aktuell gibt es kein dediziertes Test-Target. Zuerst soll ein `TouchUpCoreTests`
 - Zwei externe Touchscreens gleichzeitig.
 - Touchscreen nach App-Start einstecken.
 - Display-Kabel und USB-Kabel in unterschiedlicher Reihenfolge verbinden.
+- Fuer automatische Erkennung: Touch Up starten, hoechstens einen externen Touchmonitor verbunden lassen, danach weitere Display-/USB-Paare nacheinander verbinden.
+- Mapping-Button starten, nacheinander jeden externen Touchmonitor beruehren und pruefen, dass danach jeder Monitor korrekt reagiert.
 - Display waehrend aktiver Beruehrung abziehen.
 - Drag starten und dann Display-Topologie aendern, keine haengenden Maustasten.
 - Calibration auf Screen A ausfuehren, danach pruefen, dass Touches auf Screen A landen.
@@ -159,6 +177,7 @@ Aktuell gibt es kein dediziertes Test-Target. Zuerst soll ein `TouchUpCoreTests`
 - Der Nutzer sieht keine Auswahl fuer den Ziel-Screen der Mouse Events.
 - Mouse Events landen im Normalfall auf dem physisch passenden Touchscreen.
 - Multi-Touchscreen-Setups funktionieren pro HID-Geraet.
+- Bei uneindeutigen Setups kann der Nutzer die Zuordnung ueber den Mapping-Button manuell herstellen.
 - Kein globaler Screen-Override bleibt im normalen Eventpfad uebrig.
 - Calibration bleibt pro Monitor erhalten.
 - Die App verhaelt sich bei unklarer Zuordnung deterministisch und bricht aktive Gesten bei Zuordnungswechseln sauber ab.
@@ -170,17 +189,21 @@ Aktuell gibt es kein dediziertes Test-Target. Zuerst soll ein `TouchUpCoreTests`
 | Schritt | Status | Notizen |
 | --- | --- | --- |
 | Feature-Spec dokumentieren | Erledigt | Dieses Dokument beschreibt Zielverhalten, Anforderungen und Akzeptanzkriterien. |
-| Test-Target fuer Core anlegen | Offen | `TouchUpCoreTests` im Xcode-Projekt ergaenzen. |
-| Resolver-API entwerfen | Offen | Reine Descriptor-Eingaben, testbar ohne HID-Hardware. |
-| Resolver implementieren | Offen | Zuordnungsstrategie mit Reason und Confidence. |
-| Resolver-Unit-Tests schreiben | Offen | Namensmatch, Hotplug, Calibration-Learning, Fallbacks. |
-| Core-Pipeline auf Resolver umstellen | Offen | `screenForTouchDevice(_:)` delegiert an Resolver. |
-| Assignment-Wechsel absichern | Offen | Touches/Gesten pro `sourceIdentifier` canceln. |
-| Public Manual-Assignment-API entfernen | Offen | `assignAllTouchDevicesToDisplayID(_:)` abbauen oder intern machen. |
-| App-Modell bereinigen | Offen | `connectedTouchscreen` und Cue-Logik entfernen oder diagnostisch ersetzen. |
-| Settings-Picker entfernen | Offen | Top-Section behaelt nur noch Mouse-Control-Toggle. |
-| Calibration-Overlay entkoppeln | Offen | Keine globale Zuweisung beim Start der Calibration. |
-| Diagnose/Logging ergaenzen | Offen | Assignment-Grund und Confidence sichtbar machen. |
-| README aktualisieren | Offen | Automatische Zuordnung dokumentieren. |
-| App-/UI-Tests schreiben | Offen | Kein Picker, kein globaler Override. |
-| Manuelle QA durchfuehren | Offen | Ein- und Multi-Touchscreen-Szenarien pruefen. |
+| Test-Target fuer Core anlegen | Erledigt | `TouchUpCoreTests` ist im Xcode-Projekt und in der `TouchUpCore`-Scheme verdrahtet. |
+| Resolver-API entwerfen | Erledigt | `TUCTouchDisplayAssignmentResolver` nutzt reine Touchdevice-/Screen-Descriptoren plus optionale Hotplug- und Calibration-Signale. |
+| Resolver implementieren | Erledigt | Zuordnungsstrategie mit `reason` und `confidence`, inklusive stabiler Fallbacks. |
+| Resolver-Unit-Tests schreiben | Erledigt | Namensmatch, ambige Matches, Hotplug, Calibration-Learning, Single-Screen und Fallbacks sind abgedeckt. |
+| Core-Pipeline auf Resolver umstellen | Erledigt | `screenForTouchDevice(_:)` delegiert an den Resolver und wendet dessen Ergebnis an. |
+| Assignment-Wechsel absichern | Erledigt | Display-Wechsel canceln Touches/Gesten pro `sourceIdentifier` ueber `cancelTouchesForSourceIdentifier(_:)`. |
+| Public Manual-Assignment-API entfernen | Erledigt | `assignAllTouchDevicesToDisplayID(_:)` ist nicht mehr Public API; App-Code nutzt keinen globalen Override mehr. |
+| App-Modell bereinigen | Erledigt | `connectedTouchscreen`, Cue-Defaults und Hotplug-Auswahl im Swift-Modell sind entfernt. |
+| Settings-Picker entfernen | Erledigt | Top-Section enthaelt nur noch den Mouse-Control-Toggle. |
+| Calibration-Overlay entkoppeln | Erledigt | Overlay startet ohne globale Zuweisung und meldet aktive Touchquellen als gelerntes Signal an den Core. |
+| Calibration-Learning gegen Reconnects absichern | Erledigt | Gelernte Zuordnungen werden zusaetzlich per stabiler HID-Kennung in `UserDefaults` persistiert; doppelte identische Kennungen werden nicht automatisch uebernommen. |
+| Monitor-spezifische Sonderlogik entfernen | Erledigt | Hersteller-/Monitor-Aliasregeln sind entfernt; der Resolver nutzt nur generische Signale. |
+| Anschlussreihenfolge als Auto-Mapping nutzen | Erledigt | Core paart neu erkannte externe Displays und USB-Touchdevices innerhalb eines Zeitfensters in Reihenfolge. |
+| Manuellen Mapping-Button einbauen | Erledigt | Settings starten einen Fullscreen-Assistenten, der jeden externen Monitor nacheinander per Touchquelle bindet. |
+| Diagnose/Logging ergaenzen | Erledigt | Core loggt `sourceIdentifier`, HID-Name, Display, Reason und Confidence. |
+| README aktualisieren | Erledigt | Automatische per-Device-Zuordnung ist dokumentiert. |
+| App-/UI-Tests schreiben | Teilweise | App-Build und statische Suche verifizieren keinen Picker/Override; ein dediziertes UI-Testtarget wurde nicht angelegt. |
+| Manuelle QA durchfuehren | Offen | Hardware-Szenarien mit einem oder mehreren Touchscreens muessen auf echten Geraeten geprueft werden. |

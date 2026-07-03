@@ -124,6 +124,8 @@
 
 + (NSArray *)allScreens {
     NSMutableArray<TUCScreen *> *myScreens = [NSMutableArray array];
+    NSMutableArray<NSString *> *screenLogLines = [NSMutableArray array];
+    NSMutableArray<NSString *> *screenSignatureComponents = [NSMutableArray array];
     
     NSArray *nsScreens = [NSScreen screens];
     
@@ -137,12 +139,23 @@
         TUCScreen *e = [[TUCScreen alloc] initWithScreen:screen
                                       frameOfFirstScreen:firstFrame];
         [myScreens addObject:e];
-        NSLog(@"[TouchUp] allScreens: id=%u name='%@' NSframe={{%.0f,%.0f},{%.0f,%.0f}} CG_frame={{%.0f,%.0f},{%.0f,%.0f}}",
-              e.id, e.name,
-              screen.frame.origin.x, screen.frame.origin.y,
-              screen.frame.size.width, screen.frame.size.height,
-              e.frame.origin.x, e.frame.origin.y,
-              e.frame.size.width, e.frame.size.height);
+        NSString *line = [NSString stringWithFormat:@"[TouchUp] allScreens: id=%lu name='%@' NSframe={{%.0f,%.0f},{%.0f,%.0f}} CG_frame={{%.0f,%.0f},{%.0f,%.0f}}",
+                          (unsigned long)e.id, e.name,
+                          screen.frame.origin.x, screen.frame.origin.y,
+                          screen.frame.size.width, screen.frame.size.height,
+                          e.frame.origin.x, e.frame.origin.y,
+                          e.frame.size.width, e.frame.size.height];
+        [screenLogLines addObject:line];
+        [screenSignatureComponents addObject:[NSString stringWithFormat:@"%lu:%@:%@", (unsigned long)e.id, e.name, NSStringFromRect(e.frame)]];
+    }
+
+    static NSString *lastLoggedScreenSignature = nil;
+    NSString *screenSignature = [screenSignatureComponents componentsJoinedByString:@"|"];
+    if (![screenSignature isEqualToString:lastLoggedScreenSignature]) {
+        lastLoggedScreenSignature = [screenSignature copy];
+        for (NSString *line in screenLogLines) {
+            NSLog(@"%@", line);
+        }
     }
 
     return myScreens;

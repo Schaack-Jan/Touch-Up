@@ -65,19 +65,6 @@ struct SettingsView: View {
     var top: some View {
         Group {
             Toggle(model.uiLabels(for: \.isPublishingMouseEventsEnabled).title, isOn: $model.isPublishingMouseEventsEnabled)
-            
-            let id_: Binding<UInt> = Binding {return (model.connectedTouchscreen?.id) ?? 0}
-            set: { value in
-                if let screen = model.connectedScreens.first(where: {$0.id == value}) {
-                    model.assignTouchscreen(screen)
-                }
-            }
-
-            Picker(model.uiLabels(for: \.connectedTouchscreen).title, selection: id_) {
-                ForEach(model.connectedScreens) {
-                    Text($0.name).tag($0.id)
-                }
-            }
         }
     }
     
@@ -122,6 +109,22 @@ struct SettingsView: View {
                     MonitorCalibrationView(model: model, screen: screen)
                 }
             }
+        }
+    }
+
+    var mappingSettings: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                (NSApp.delegate as? AppDelegate)?.showTouchMappingOverlay()
+            } label: {
+                Label("Map Touchscreens", systemImage: "hand.point.up.left")
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(model.connectedScreens.isEmpty || model.isMappingTouchscreens)
+
+            Text("Touch Up will show each external monitor fullscreen. Touch the shown monitor once to bind that touch device to it.")
+                .font(.caption)
+                .foregroundColor(.secondary)
         }
     }
     
@@ -217,6 +220,10 @@ struct SettingsView: View {
                     parameterSettings
                 }
 
+                Section("Mapping") {
+                    mappingSettings
+                }
+
                 Section("Calibration") {
                     calibrationSettings
                 }
@@ -258,6 +265,10 @@ struct SettingsView: View {
                 
                 LegacySection(title: "Parameters") {
                     parameterSettings
+                }
+
+                LegacySection(title: "Mapping") {
+                    mappingSettings
                 }
 
                 LegacySection(title: "Calibration") {
@@ -428,6 +439,98 @@ struct CalibrationNumberField: View {
                 .multilineTextAlignment(.trailing)
                 .frame(width: 96)
         }
+    }
+}
+
+enum TouchMappingAssistantResult {
+    case mapped(Int)
+    case cancelled
+}
+
+struct TouchMappingAssistantView: View {
+    @ObservedObject var model: TouchUp
+    let screen: TUCScreen
+    let stepIndex: Int
+    let totalSteps: Int
+    let excludedSourceIdentifiers: Set<Int>
+    let completion: (TouchMappingAssistantResult) -> Void
+
+    @State private var waitingForLift = true
+    @State private var didComplete = false
+
+    private let timer = Timer.publish(every: 0.04, on: .main, in: .common).autoconnect()
+
+    var body: some View {
+        ZStack {
+            Color(white: 0.06)
+                .ignoresSafeArea()
+
+            VStack(spacing: 18) {
+                Text(screen.name)
+                    .font(.largeTitle)
+                    .fontWeight(.semibold)
+
+                Text("Mapping \(stepIndex) of \(totalSteps)")
+                    .font(.title3)
+                    .foregroundColor(.secondary)
+
+                ZStack {
+                    Circle()
+                        .stroke(Color.accentColor, lineWidth: 6)
+                        .frame(width: 132, height: 132)
+                    Circle()
+                        .fill(Color.white)
+                        .frame(width: 16, height: 16)
+                }
+                .padding(.vertical, 22)
+
+                Text(waitingForLift ? "Lift all fingers" : "Touch this monitor")
+                    .font(.title2)
+                    .foregroundColor(.white)
+
+                Button("Cancel") {
+                    completion(.cancelled)
+                }
+                .keyboardShortcut(.cancelAction)
+                .padding(.top, 20)
+            }
+            .foregroundColor(.white)
+            .padding(36)
+        }
+        .onReceive(timer) { _ in
+            updateMapping()
+        }
+        .onChange(of: model.touches.count) { _ in
+            updateMapping()
+        }
+    }
+
+    private func updateMapping() {
+        guard !didComplete else {
+            return
+        }
+
+        let activeTouches = model.touches.filter { $0.isActive() }
+        guard !activeTouches.isEmpty else {
+            waitingForLift = false
+            return
+        }
+
+        guard !waitingForLift else {
+            return
+        }
+
+        guard let touch = activeTouches.first(where: { !excludedSourceIdentifiers.contains($0.sourceIdentifier) }) else {
+            return
+        }
+
+        didComplete = true
+        model.learnTouchAssignment(sourceIdentifier: touch.sourceIdentifier, to: screen)
+        NSLog("[TouchUp] HID: manual mapping assigned source=%ld displayID=%lu display='%@'",
+              touch.sourceIdentifier,
+              screen.id,
+              screen.name)
+        completion(.mapped(touch.sourceIdentifier))
     }
 }
 

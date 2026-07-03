@@ -94,7 +94,12 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)stop;
 
 
-- (void)assignAllTouchDevicesToDisplayID:(NSUInteger)displayID;
+- (void)refreshScreenAssignments;
+
+- (void)resetDisplayAssignments;
+
+- (void)learnDisplayAssignmentForSourceIdentifier:(NSInteger)sourceIdentifier
+                                        displayID:(NSUInteger)displayID;
 
 
 - (CGPoint)convertScreenPointRelativeToAbsolute:(CGPoint)relativePoint;

@@ -34,6 +34,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }()
 
     var calibrationOverlay: CalibrationOverlay?
+    var touchMappingOverlay: TouchMappingOverlay?
+    var touchMappingScreens = [TUCScreen]()
+    var touchMappingIndex = 0
+    var touchMappingSourceIdentifiers = Set<Int>()
+    var touchMappingPreviousPublishingState = true
+    var didScheduleStartupTouchMapping = false
     
     @IBAction func toggleActivationMenu(_ sender: Any) {
         self.model.isPublishingMouseEventsEnabled.toggle()
@@ -71,6 +77,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         if model.needsPermissionsPrompt {
             self.showPreferences(nil)
+        } else {
+            self.scheduleStartupTouchMappingIfNeeded()
         }
         
         #if DEBUG
@@ -87,6 +95,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidBecomeActive(_ notification: Notification) {
         self.model.checkAccessibilityAccessGranted()
         self.model.checkHIDListenEventAccessGranted(restartIfNewlyGranted: true)
+        self.scheduleStartupTouchMappingIfNeeded()
     }
 
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
@@ -113,7 +122,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func showCalibrationOverlay(for screen: TUCScreen) {
         let preState = self.model.isPublishingMouseEventsEnabled
-        self.model.assignTouchscreen(screen)
         self.model.isPublishingMouseEventsEnabled = false
 
         let overlay = CalibrationOverlay.overlay(model: self.model, screen: screen) { [weak self] result in
@@ -136,6 +144,104 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         self.calibrationOverlay = overlay
         overlay.makeVisible()
+    }
+
+    private func scheduleStartupTouchMappingIfNeeded() {
+        guard !self.didScheduleStartupTouchMapping,
+              !self.model.needsPermissionsPrompt,
+              !self.model.isMappingTouchscreens,
+              self.model.screensForTouchMapping().count > 1 else {
+            return
+        }
+
+        self.didScheduleStartupTouchMapping = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) { [weak self] in
+            guard let self,
+                  !self.model.needsPermissionsPrompt,
+                  !self.model.isMappingTouchscreens,
+                  self.model.screensForTouchMapping().count > 1 else {
+                return
+            }
+
+            NSLog("[TouchUp] HID: startup manual mapping scheduled")
+            self.showTouchMappingOverlay()
+        }
+    }
+
+    func showTouchMappingOverlay() {
+        let screens = self.model.screensForTouchMapping()
+        guard !screens.isEmpty else {
+            self.settingsWindow.makeVisible()
+            return
+        }
+
+        self.touchMappingPreviousPublishingState = self.model.isPublishingMouseEventsEnabled
+        self.model.isPublishingMouseEventsEnabled = false
+        self.model.isMappingTouchscreens = true
+        self.model.resetTouchAssignments()
+
+        self.touchMappingScreens = screens
+        self.touchMappingIndex = 0
+        self.touchMappingSourceIdentifiers = []
+        self.settingsWindow.orderOut(nil)
+
+        NSLog("[TouchUp] HID: manual mapping started displays=%@",
+              screens.map { "\($0.id):\($0.name)" }.joined(separator: ", "))
+        self.showNextTouchMappingOverlay()
+    }
+
+    private func showNextTouchMappingOverlay() {
+        self.touchMappingOverlay?.close()
+        self.touchMappingOverlay = nil
+
+        guard self.touchMappingIndex < self.touchMappingScreens.count else {
+            self.finishTouchMapping()
+            return
+        }
+
+        let screen = self.touchMappingScreens[self.touchMappingIndex]
+        NSLog("[TouchUp] HID: manual mapping waiting displayID=%lu display='%@' step=%ld/%ld",
+              screen.id,
+              screen.name,
+              self.touchMappingIndex + 1,
+              self.touchMappingScreens.count)
+        let overlay = TouchMappingOverlay.overlay(model: self.model,
+                                                  screen: screen,
+                                                  stepIndex: self.touchMappingIndex + 1,
+                                                  totalSteps: self.touchMappingScreens.count,
+                                                  excludedSourceIdentifiers: self.touchMappingSourceIdentifiers) { [weak self] result in
+            guard let self else {
+                return
+            }
+
+            switch result {
+            case .mapped(let sourceIdentifier):
+                self.touchMappingSourceIdentifiers.insert(sourceIdentifier)
+                self.touchMappingIndex += 1
+                self.touchMappingOverlay?.close()
+                self.touchMappingOverlay = nil
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                    self.showNextTouchMappingOverlay()
+                }
+            case .cancelled:
+                self.finishTouchMapping()
+            }
+        }
+
+        self.touchMappingOverlay = overlay
+        overlay.makeVisible()
+    }
+
+    private func finishTouchMapping() {
+        self.touchMappingOverlay?.close()
+        self.touchMappingOverlay = nil
+        self.touchMappingScreens = []
+        self.touchMappingIndex = 0
+        self.touchMappingSourceIdentifiers = []
+        self.model.isMappingTouchscreens = false
+        self.model.isPublishingMouseEventsEnabled = self.touchMappingPreviousPublishingState
+        self.model.touchManager.refreshScreenAssignments()
+        self.settingsWindow.makeVisible()
     }
 }
 
@@ -221,7 +327,7 @@ class DebugOverlay: NSWindow {
         NSApp.activate(ignoringOtherApps: true)
         
         if let controller = self.contentViewController {
-            if let screen = model?.connectedTouchscreen?.systemScreen() {
+            if let screen = model?.touchscreen()?.systemScreen() {
                 self.level = .screenSaver // prevents notifications from coming in
                 let presentationOptions: NSApplication.PresentationOptions = [.hideDock, .hideMenuBar, .disableProcessSwitching]
                 
@@ -276,6 +382,72 @@ class CalibrationOverlay: NSWindow {
 
         guard let controller = self.contentViewController,
               let screen = calibrationScreen?.systemScreen() else {
+            return
+        }
+
+        self.level = .screenSaver
+        let presentationOptions: NSApplication.PresentationOptions = [.hideDock, .hideMenuBar, .disableProcessSwitching]
+        let options: [NSView.FullScreenModeOptionKey: NSNumber] = [
+            .fullScreenModeApplicationPresentationOptions: NSNumber(value: presentationOptions.rawValue),
+            .fullScreenModeWindowLevel: NSNumber(value: kCGNormalWindowLevel),
+            .fullScreenModeAllScreens: NSNumber(booleanLiteral: false)
+        ]
+
+        self.setIsVisible(false)
+        controller.view.enterFullScreenMode(screen, withOptions: options)
+    }
+
+    override func close() {
+        if let controller = self.contentViewController {
+            self.level = .normal
+            self.setIsVisible(true)
+            controller.view.exitFullScreenMode(options: nil)
+        }
+
+        super.close()
+    }
+}
+
+class TouchMappingOverlay: NSWindow {
+
+    var mappingScreen: TUCScreen?
+
+    static func overlay(model: TouchUp,
+                        screen: TUCScreen,
+                        stepIndex: Int,
+                        totalSteps: Int,
+                        excludedSourceIdentifiers: Set<Int>,
+                        completion: @escaping (TouchMappingAssistantResult) -> Void) -> TouchMappingOverlay {
+        let vc = NSHostingController(rootView: TouchMappingAssistantView(model: model,
+                                                                         screen: screen,
+                                                                         stepIndex: stepIndex,
+                                                                         totalSteps: totalSteps,
+                                                                         excludedSourceIdentifiers: excludedSourceIdentifiers,
+                                                                         completion: completion))
+
+        let window = TouchMappingOverlay(contentRect: .zero,
+                                         styleMask: [.resizable, .miniaturizable, .fullSizeContentView],
+                                         backing: .buffered,
+                                         defer: true,
+                                         screen: nil)
+
+        window.title = "Touch Mapping"
+        window.tabbingMode = .disallowed
+        window.mappingScreen = screen
+
+        let windowController = NSWindowController(window: window)
+        windowController.contentViewController = vc
+
+        return window
+    }
+
+    func makeVisible() {
+        self.setIsVisible(true)
+        self.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+
+        guard let controller = self.contentViewController,
+              let screen = mappingScreen?.systemScreen() else {
             return
         }
 

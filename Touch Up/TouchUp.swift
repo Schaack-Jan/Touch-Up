@@ -40,16 +40,10 @@ class TouchUp: NSObject, ObservableObject {
     
     
     @Published var connectedScreens = [TUCScreen]()
-    var connectedTouchscreen: TUCScreen?
 
     @Published var calibrationStore = TouchCalibrationStore.empty
     @Published var calibrationDrafts = [String: TouchCalibration]()
-    
-    var lastDateUSBAdded: Date?
-    var lastDateScreenAdded: Date?
-    var idOfLastAddedScreen: UInt?
-    
-    let hotPlugTimeInterval: TimeInterval = 10
+    @Published var isMappingTouchscreens = false
     
     
     @Published var isAccessibilityAccessGranted = false
@@ -67,117 +61,9 @@ class TouchUp: NSObject, ObservableObject {
         needsAccessibilityAccessPrompt || needsHIDListenEventAccessPrompt
     }
     
-    // MARK: - Attempt to automatically determine touch screen
-    
-    
-    
-    var identificationCues: (name:String, id:UInt) {
-        get {
-            let name = UserDefaults.standard.string(forKey: "touchscreenNameCue") ?? "Digital"
-            let id   = UserDefaults.standard.integer(forKey: "touchscreenIDCue")
-            return (name, UInt(id))
-        }
-    }
-    
-    func rememeberCues() {
-        if let connectedTouchscreen = self.touchscreen() {
-            UserDefaults.standard.set(connectedTouchscreen.name, forKey: "touchscreenNameCue")
-            UserDefaults.standard.set(connectedTouchscreen.id,   forKey: "touchscreenIDCue")
-        }
-    }
-    
-    
-    /**
-     returns true, if the screen list contained the preferred screen which is now assigned the touch screen.
-     if screen list empty, it removes the assigned touch screen.
-     */
-    @discardableResult func identifyPreferredOrNoScreen() -> Bool {
-        let cues = identificationCues
-        
-        
-        if connectedScreens.count == 0 {
-            self.connectedTouchscreen = nil
-            self.connectionState = .uncertain
-            print("OH NO SCREEN")
-            return true
-        }
-        
-       
-        
-        // Perfect match: name + ID
-        if let perfectMatch = connectedScreens.first(where: { $0.matching(name: cues.name, id: cues.id) == 1}) {
-            self.connectedTouchscreen = perfectMatch
-            self.connectionState = lastDateUSBAdded == nil ? .connectedPreferred : .connectedHotPlug
-            print("PREFERRED SCREEN FOUND (perfect match)")
-            return true
-        }
-
-        // Partial match by name only — ID can change after reconnect/reboot
-        if let nameMatch = connectedScreens.first(where: { $0.matching(name: cues.name, id: cues.id) >= 0.5 }) {
-            self.connectedTouchscreen = nameMatch
-            self.connectionState = .uncertain
-            print("PREFERRED SCREEN FOUND (name match)")
-            return true
-        }
-
-        return false
-    }
-    
-    
-    @discardableResult func identifyHotPlug() -> Bool {
-        // if the USB cable of a touch screen was plugged in within last 10 seconds, assign this to the touchscreen
-        
-        // no need to hot plug during existing connection
-        if self.connectionState.isConnected {
-            print("HOTPLUG SKIPPED")
-            return false
-        }
-        
-        if let lastDateUSBAdded, let lastDateScreenAdded, let idOfLastAddedScreen {
-            if Date().timeIntervalSince(lastDateUSBAdded) < hotPlugTimeInterval
-                && Date().timeIntervalSince(lastDateScreenAdded) < hotPlugTimeInterval {
-                
-                
-                if let screen = self.connectedScreens.first(where: {$0.id == idOfLastAddedScreen}) {
-                    self.connectedTouchscreen = screen
-                    let cues = identificationCues
-                    let match = screen.matching(name: cues.name, id: cues.id)
-                    self.connectionState = match == 1 ? .connectedPreferred : .connectedHotPlug
-                    print("HOTPLUG SUCCESS")
-                    return true
-                }
-                
-                print("HOTPLUG FAIL")
-            }
-        }
-        
-        return false
-    }
-    
-    
     @objc func screenParametersDidChange() {
-        // identify which screen is newly added.
-        let oldScreenList = self.connectedScreens
         self.connectedScreens = TUCScreen.allScreens() as! [TUCScreen]
-        
-        // a new screen appeared!
-        if connectedScreens.count > oldScreenList.count {
-            self.lastDateScreenAdded = Date()
-            
-            let new = connectedScreens.first { s in
-                !(oldScreenList.contains(where: {$0.id == s.id}))
-            }
-            if let new {
-                self.idOfLastAddedScreen = new.id
-                identifyHotPlug()
-            }
-        }
-        
-        // search for the preferred screen, also important if user rearranged screens (and screen numbers)
-        if !self.identifyPreferredOrNoScreen() {
-            self.connectedTouchscreen = self.connectedScreens.last
-        }
-
+        self.touchManager.refreshScreenAssignments()
         self.syncCalibrationsToTouchManager()
     }
     
@@ -370,10 +256,31 @@ extension TouchUp {
         calibrationDrafts[screen.calibrationKey] = calibration.sanitized(for: screen)
     }
 
-    func assignTouchscreen(_ screen: TUCScreen) {
-        connectedTouchscreen = screen
-        rememeberCues()
-        touchManager.assignAllTouchDevices(toDisplayID: screen.id)
+    func learnTouchAssignment(from touch: TUCTouch, to screen: TUCScreen) {
+        learnTouchAssignment(sourceIdentifier: touch.sourceIdentifier, to: screen)
+    }
+
+    func learnTouchAssignment(sourceIdentifier: Int, to screen: TUCScreen) {
+        touchManager.learnDisplayAssignment(forSourceIdentifier: sourceIdentifier, displayID: screen.id)
+    }
+
+    func resetTouchAssignments() {
+        touchManager.resetDisplayAssignments()
+        touches = touchManager.touchSet.allObjects as? [TUCTouch] ?? []
+    }
+
+    func screensForTouchMapping() -> [TUCScreen] {
+        let sortedScreens = connectedScreens.sorted {
+            if $0.frame.origin.x == $1.frame.origin.x {
+                return $0.frame.origin.y < $1.frame.origin.y
+            }
+            return $0.frame.origin.x < $1.frame.origin.x
+        }
+        let externalScreens = sortedScreens.filter { screen in
+            CGDisplayIsBuiltin(CGDirectDisplayID(screen.id)) == 0
+        }
+
+        return externalScreens.isEmpty ? sortedScreens : externalScreens
     }
 
     func applyCalibration(for screen: TUCScreen) {
@@ -467,19 +374,12 @@ extension TouchUp: TUCTouchDelegate {
     
     
     func touchscreen() -> TUCScreen? {
-        self.connectedTouchscreen ?? self.connectedScreens.last
+        self.connectedScreens.first
     }
 
     func touchscreenDidConnect() {
-        self.lastDateUSBAdded = Date()
-
-        if !self.identifyHotPlug() {
-            if self.connectionState.isConnected {
-                self.connectionState = .uncertain
-            }
-        }
-        
-        self.identifyPreferredOrNoScreen()
+        self.connectionState = .connectedAutomatic
+        self.touchManager.refreshScreenAssignments()
     }
     
     func touchscreenDidDisconnect() {
@@ -494,10 +394,6 @@ extension TouchUp {
         case \.isPublishingMouseEventsEnabled:
             return("Control Mouse with Touch",
                    "Turns the driver on or off.")
-            
-        case \.connectedTouchscreen:
-            return("Assign Mouse Events to",
-                   "Specifies which screen should receive the touch events.")
             
         case \.isWindowTitleBarDragEnabled:
             return("Move Windows by Title Bar Drag",
@@ -537,8 +433,7 @@ extension TouchUp {
 enum ConnectionState: Int {
     case uncertain
     case disconnected
-    case connectedHotPlug // connected as result from hot plugging within a few seconds
-    case connectedPreferred // connected with stored cues matching perfectly
+    case connectedAutomatic
     
     var image: NSImage? {
         let image: NSImage?
@@ -548,7 +443,7 @@ enum ConnectionState: Int {
             image = NSImage(systemSymbolName: "rectangle.dashed", accessibilityDescription: nil)
         case .disconnected:
             image = NSImage(systemSymbolName: "rectangle.badge.xmark", accessibilityDescription: nil)
-        default:
+        case .connectedAutomatic:
             image = NSImage(systemSymbolName: "hand.point.up.left", accessibilityDescription: nil)
         }
 
@@ -558,19 +453,9 @@ enum ConnectionState: Int {
     }
     
     var isConnected: Bool {
-        return self == .connectedPreferred || self == .connectedHotPlug
+        return self == .connectedAutomatic
     }
 }
-                 
-                 
-extension TUCScreen: @retroactive Identifiable {
-    func matching(name:String, id:UInt) -> Float {
-        let sameName = self.name == name
-        let sameID = self.id == id
-        
-        if sameName && sameID { return 1 }
-        else if sameName { return 0.5 }
-        else if sameID { return 0.2 }
-        else { return 0}
-    }
-}
+
+
+extension TUCScreen: @retroactive Identifiable {}

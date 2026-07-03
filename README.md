@@ -8,6 +8,7 @@ The code in this repository provides a user-space driver that reads and processe
 
 ## What can you do with this App?
 The Touch Up **utility app** allows you to control your Mac with any connected touch screen. Touch Up supports clicks, cursor movement, two-finger scrolling, and optional secondary clicks.
+Touch screens are assigned to displays per USB HID device. Touch Up can map newly connected display/USB pairs automatically by connection order, and the settings include a manual mapping assistant for ambiguous multi-touchscreen setups.
 While the behavior of the driver is customizable, the default setting follows Windows-like touch gestures:
 
 - Tap anywhere on the screen to click objects
@@ -22,7 +23,7 @@ While the behavior of the driver is customizable, the default setting follows Wi
 - Compile the app or [download the latest notarized build here](https://github.com/shueber/Touch-Up/releases).
 - If you wish, move the app into your Applications folder and add it as a Login item.
 - Launch it and allow the requested Accessibility and Input Monitoring access.
-- Plug in your touchscreen and start touching.
+- Plug in your touchscreen and start touching. For multi-touchscreen setups, connect additional display/USB pairs one after another or use **Map Touchscreens** in settings to bind each touch device to its monitor.
 
 ### Privacy and Permissions
 Touch Up needs Accessibility access to post mouse events to macOS.
