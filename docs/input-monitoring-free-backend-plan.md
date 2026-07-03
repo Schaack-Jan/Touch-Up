@@ -389,7 +389,7 @@ Die Umsetzung gilt erst als fertig, wenn:
 | Touch-Up Ist-Zustand analysieren | Erledigt | IOHID/Input-Monitoring-Pfad, Resolver, Kalibrierung, Mapping und Gesten geprueft. |
 | Zielarchitektur festlegen | Erledigt | Driver ohne Monitorwissen, Backend-Service/API, bestehender Core fuer Mapping/Kalibrierung/Gesten. |
 | Plan-Dokument anlegen | Erledigt | Dieses Dokument. |
-| Backend-Abstraktion implementieren | Offen | Start mit IOHID-Adapter ohne Verhaltensaenderung. |
+| Backend-Abstraktion implementieren | Erledigt | IOHID-Adapter hinter `TUCTouchInputBackend`; `TouchUpCore` Debug-Build erfolgreich. |
 | Fake-Backend und Core-Tests | Offen | Touchframes, Device-Lifecycle, Disconnect, Gesten. |
 | DriverKit-Entitlements/Signing klaeren | Offen | Muss vor echter System Extension passieren. |
 | DriverKit/System-Extension POC | Offen | Hartes Gate: Touch ohne Input Monitoring, keine Nicht-Touch-HID-Uebernahme. |
@@ -406,7 +406,8 @@ Die Umsetzung gilt erst als fertig, wenn:
 
 | Zeit | Schritt | Commit | Ergebnis |
 | --- | --- | --- | --- |
-| 2026-07-03 | Plan-Dokument versionieren | ausstehend | Plan als Arbeitsgrundlage in Git aufgenommen. |
+| 2026-07-03 | Plan-Dokument versionieren | d220cb2 | Plan als Arbeitsgrundlage in Git aufgenommen. |
+| 2026-07-03 | Backend-Abstraktion implementieren | dieser Commit | Backend-Protokoll, Modelle und IOHID-Adapter eingefuehrt; Manager verarbeitet generische Backend-Frames. |
 
 ## Quellen
 
